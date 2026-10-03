@@ -1,0 +1,382 @@
+// Microsoft Visual C++ generated resource script.
+//
+#include "resource.h"
+
+// version.h and branding.h are different in the Sysinternals repository,
+// keep the includes as such, here.
+// From $(MSBuildThisFileDirectory)..\..\..\common\version
+#include "version.h"
+// From $(MSBuildThisFileDirectory)PowerToys
+#include "branding.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 2 resource.
+//
+#include "winres.h"
+
+/////////////////////////////////////////////////////////////////////////////
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// English (United States) resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+
+#ifdef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// TEXTINCLUDE
+//
+
+1 TEXTINCLUDE 
+BEGIN
+    "resource.h\0"
+END
+
+2 TEXTINCLUDE 
+BEGIN
+    "#include ""winres.h""\r\n"
+    "\0"
+END
+
+3 TEXTINCLUDE 
+BEGIN
+END
+
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Cursor
+//
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Icon
+//
+
+// Icon with lowest ID value placed first to ensure application icon
+// remains consistent on all systems.
+APPICON                 ICON                    "../assets/appicon.ico"
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Version
+//
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION FILE_VERSION
+ PRODUCTVERSION PRODUCT_VERSION
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", COMPANY_NAME
+            VALUE "FileDescription", FILE_DESCRIPTION
+            VALUE "FileVersion", FILE_VERSION_STRING
+            VALUE "InternalName", INTERNAL_NAME
+            VALUE "LegalCopyright", COPYRIGHT_NOTE
+            VALUE "OriginalFilename", ORIGINAL_FILENAME
+            VALUE "ProductName", ZOOMIT_PRODUCT_NAME
+            VALUE "ProductVersion", PRODUCT_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+OPTIONS DIALOGEX 0, 0, 279, 325
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CLIPSIBLINGS | WS_CAPTION | WS_SYSMENU
+EXSTYLE WS_EX_CONTROLPARENT
+CAPTION "ZoomIt Custom"
+FONT 8, "MS Shell Dlg", 0, 0, 0x0
+BEGIN
+    DEFPUSHBUTTON   "OK",IDOK,166,306,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,223,306,50,14
+    LTEXT           "ZoomIt Custom 1.0",IDC_VERSION,42,7,73,10
+    LTEXT           "Copyright � 2006-2024 Mark Russinovich",IDC_COPYRIGHT,42,17,166,8
+    CONTROL         "<a HREF=""https://www.sysinternals.com"">Sysinternals - www.sysinternals.com</a>",IDC_LINK,
+                    "SysLink",WS_TABSTOP,42,26,150,9
+    ICON            "APPICON",IDC_STATIC,12,9,20,20
+    CONTROL         "Show tray icon",IDC_SHOW_TRAY_ICON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,295,105,10
+    CONTROL         "",IDC_TAB,"SysTabControl32",TCS_MULTILINE | WS_TABSTOP,8,46,265,245
+    CONTROL         "Run ZoomIt when Windows starts",IDC_AUTOSTART,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,309,122,10
+END
+
+ADVANCED_BREAK DIALOGEX 0, 0, 209, 219
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Advanced Break Options"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "Play Sound on Expiration:",IDC_CHECK_SOUND_FILE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,3,11,98,10,WS_EX_RIGHT
+    EDITTEXT        IDC_SOUND_FILE,61,38,125,12,ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "&...",IDC_SOUND_BROWSE,187,38,13,11
+    COMBOBOX        IDC_OPACITY,62,58,38,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "",IDC_TIMER_POS1,"Button",BS_AUTORADIOBUTTON,63,78,10,10
+    CONTROL         "",IDC_TIMER_POS2,"Button",BS_AUTORADIOBUTTON,79,78,10,10
+    CONTROL         "",IDC_TIMER_POS3,"Button",BS_AUTORADIOBUTTON,97,78,10,10
+    CONTROL         "",IDC_TIMER_POS4,"Button",BS_AUTORADIOBUTTON,63,93,10,10
+    CONTROL         "",IDC_TIMER_POS5,"Button",BS_AUTORADIOBUTTON,79,93,10,10
+    CONTROL         "",IDC_TIMER_POS6,"Button",BS_AUTORADIOBUTTON,97,93,10,10
+    CONTROL         "",IDC_TIMER_POS7,"Button",BS_AUTORADIOBUTTON,63,108,10,10
+    CONTROL         "",IDC_TIMER_POS8,"Button",BS_AUTORADIOBUTTON,79,108,10,10
+    CONTROL         "",IDC_TIMER_POS9,"Button",BS_AUTORADIOBUTTON,97,108,10,10
+    CONTROL         "Show background bitmap:",IDC_CHECK_BACKGROUND_FILE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,3,122,99,10,WS_EX_RIGHT
+    CONTROL         "Use faded desktop as background",IDC_STATIC_DESKTOP_BACKGROUND,
+                    "Button",BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,46,135,125,10
+    CONTROL         "Use image file as background",IDC_STATIC_BACKGROUND_FILE,
+                    "Button",BS_AUTORADIOBUTTON | WS_TABSTOP,46,149,109,10
+    EDITTEXT        IDC_BACKGROUND_FILE,62,164,125,12,ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "&...",IDC_BACKGROUND_BROWSE,188,164,13,11
+    CONTROL         "Scale to screen:",IDC_CHECK_BACKGROUND_STRETCH,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,58,180,67,10,WS_EX_RIGHT
+    DEFPUSHBUTTON   "OK",IDOK,97,201,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,150,201,50,14
+    LTEXT           "Alarm Sound File:",IDC_STATIC_SOUND_FILE,61,26,56,8
+    LTEXT           "Timer Opacity:",IDC_STATIC,8,59,48,8
+    LTEXT           "Timer Position:",IDC_STATIC,8,77,48,8
+    CONTROL         "",IDC_STATIC,"Static",SS_BLACKFRAME | SS_SUNKEN,7,196,193,1,WS_EX_CLIENTEDGE
+END
+
+ZOOM DIALOGEX 0, 0, 260, 158
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,59,57,80,12
+    LTEXT           "After toggling ZoomIt you can zoom in with the mouse wheel or up and down arrow keys. Exit zoom mode with Escape or by pressing the right mouse button.",IDC_STATIC,7,6,246,26
+    LTEXT           "Zoom Toggle:",IDC_STATIC,7,59,51,8
+    CONTROL         "",IDC_ZOOM_SLIDER,"msctls_trackbar32",TBS_AUTOTICKS | TBS_BOTH | TBS_NOTICKS | WS_TABSTOP,53,104,150,15,WS_EX_TRANSPARENT
+    LTEXT           "Specify the initial level of magnification when zooming in:",IDC_STATIC,7,91,215,10
+    LTEXT           "1.25",IDC_STATIC,52,122,16,8
+    LTEXT           "1.5",IDC_STATIC,82,122,12,8
+    LTEXT           "1.75",IDC_STATIC,108,122,16,8
+    LTEXT           "2.0",IDC_STATIC,138,122,12,8
+    LTEXT           "3.0",IDC_STATIC,164,122,12,8
+    LTEXT           "4.0",IDC_STATIC,190,122,12,8
+    CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,74,116,10
+    LTEXT           "Copy a zoomed screen with Ctrl+C or save it by typing Ctrl+S. Crop the copy or save region by entering Ctrl+Shift instead of Ctrl.",IDC_STATIC,7,34,246,17
+END
+
+DRAW DIALOGEX 0, 0, 260, 228
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "Once zoomed, toggle drawing mode by pressing the left mouse button. Undo with Ctrl+Z and all drawing by pressing E. Center the cursor with the space bar. Exit drawing mode by pressing the right mouse button.",IDC_STATIC,7,7,246,24
+    LTEXT           "Pen Control ",IDC_PEN_CONTROL,7,38,40,8
+    LTEXT           "Change the pen width by pressing left Ctrl and using the mouse wheel or the up and down arrow keys.",IDC_STATIC,19,48,233,16
+    LTEXT           "Colors",IDC_COLORS,7,70,21,8
+    LTEXT           "Change the pen color by pressing R (red), G (green), B (blue),\nO (orange), Y (yellow) or P (pink).",IDC_STATIC,19,80,233,16
+    LTEXT           "Highlight and Blur",IDC_HIGHLIGHT_AND_BLUR,7,102,58,8
+    LTEXT           "Hold Shift while pressing a color key for a translucent highlighter color. Press X for blur or Shift+X for a stronger blur.",IDC_STATIC,19,113,233,16
+    LTEXT           "Shapes",IDC_SHAPES,7,134,23,8
+    LTEXT           "Draw a line by holding down the Shift key, a rectangle with the Ctrl key, an ellipse with the Tab key and an arrow with Shift+Ctrl.",IDC_STATIC,19,144,233,16
+    LTEXT           "Screen",IDC_SCREEN,7,166,22,8
+    LTEXT           "Clear the screen for a sketch pad by pressing W (white) or K (black). Copy a zoomed screen with Ctrl+C or save it by typing Ctrl+S. Crop the copy or save region by entering Ctrl+Shift instead of Ctrl.",IDC_STATIC,19,176,233,24
+    CONTROL         "",IDC_DRAW_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,73,207,80,12
+    LTEXT           "Draw w/out Zoom:",IDC_STATIC,7,210,63,11
+END
+
+
+
+BREAK DIALOGEX 0, 0, 260, 123
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_BREAK_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,52,67,80,12
+    EDITTEXT        IDC_TIMER,31,86,31,13,ES_RIGHT | ES_AUTOHSCROLL | ES_NUMBER
+    CONTROL         "",IDC_SPIN_TIMER,"msctls_updown32",UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS,45,86,11,12
+    LTEXT           "minutes",IDC_STATIC,67,88,25,8
+    PUSHBUTTON      "&Advanced",IDC_ADVANCED_BREAK,212,102,41,14
+    LTEXT           "Enter timer mode by using the ZoomIt tray icon's Break menu item. Increase and decrease time with the arrow keys. If you Alt-Tab away from the timer window, reactivate it by left-clicking on the ZoomIt tray icon. Exit timer mode with Escape. ",IDC_STATIC,7,7,246,33
+    LTEXT           "Start Timer:",IDC_STATIC,7,70,39,8
+    LTEXT           "Timer:",IDC_STATIC,7,88,20,8
+    LTEXT           "Change the break timer color using the same keys that the drawing color. The timer uses the default system font.",IDC_STATIC,7,45,219,20
+    CONTROL         "Show Time Elapsed After Expiration:",IDC_CHECK_SHOW_EXPIRED,
+                    "Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,8,104,132,10
+END
+
+
+
+LIVEZOOM DIALOGEX 0, 0, 260, 134
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "",IDC_LIVE_STATUS,7,123,246,10
+    CONTROL         "",IDC_LIVE_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,69,108,80,12
+    LTEXT           "LiveZoom mode is supported on updated Windows 10 and Windows 11 where window updates show while zoomed. ",IDC_STATIC,7,7,246,18
+    LTEXT           "LiveZoom Toggle:",IDC_STATIC,7,110,62,8
+    LTEXT           "To enter and exit LiveZoom, enter the hotkey specified below.",IDC_STATIC,7,94,218,13
+    LTEXT           "Note that in LiveZoom you must use Ctrl+Up and Ctrl+Down to control the zoom level. To enter drawing mode, use the standard zoom-without-draw hotkey and then escape to go back to LiveZoom.",IDC_STATIC,7,30,246,27
+    LTEXT           "Use LiveDraw to draw and annotate the live desktop. To activate LiveDraw, enter the hotkey with the Shift key in the opposite mode. You can remove LiveDraw annotations by activating LiveDraw and enter the escape key",IDC_STATIC,7,62,246,32
+END
+
+
+SNIP DIALOGEX 0, 0, 260, 68
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_SNIP_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,55,32,80,12
+    LTEXT           "Snip Toggle:",IDC_STATIC,7,33,45,8
+    LTEXT           "Copy a region of the screen to the clipboard or enter the hotkey with the Shift key in the opposite mode to save it to a file. ",IDC_STATIC,7,7,246,19
+END
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// DESIGNINFO
+//
+
+#ifdef APSTUDIO_INVOKED
+GUIDELINES DESIGNINFO
+BEGIN
+    "OPTIONS", DIALOG
+    BEGIN
+        RIGHTMARGIN, 273
+        BOTTOMMARGIN, 320
+    END
+
+    "ADVANCED_BREAK", DIALOG
+    BEGIN
+        RIGHTMARGIN, 207
+        BOTTOMMARGIN, 215
+    END
+
+    "ZOOM", DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 253
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 151
+    END
+
+    "DRAW", DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 253
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 221
+    END
+
+
+    "BREAK", DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 253
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 116
+    END
+
+
+    "LIVEZOOM", DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 253
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 127
+    END
+
+
+    "SNIP", DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 253
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 61
+    END
+
+END
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Accelerator
+//
+
+ACCELERATORS ACCELERATORS
+BEGIN
+    "C",            IDC_COPY,               VIRTKEY, CONTROL, NOINVERT
+    "S",            IDC_SAVE,               VIRTKEY, CONTROL, NOINVERT
+    "C",            IDC_COPY_CROP,           VIRTKEY, SHIFT, CONTROL, NOINVERT
+    "S",            IDC_SAVE_CROP,           VIRTKEY, SHIFT, CONTROL, NOINVERT
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// AFX_DIALOG_LAYOUT
+//
+
+OPTIONS AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+LIVEZOOM AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+DRAW AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+
+
+ZOOM AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+SNIP AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+BREAK AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+
+#endif    // English (United States) resources
+/////////////////////////////////////////////////////////////////////////////
+
+
+
+#ifndef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 3 resource.
+//
+/////////////////////////////////////////////////////////////////////////////
+#endif    // not APSTUDIO_INVOKED
+

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>ZoomIt Custom: lente e matita</title>
+  <circle cx="128" cy="128" r="124" fill="#1369B5"/>
+  <circle cx="110.5" cy="106.5" r="63.5" fill="#45D9D0" stroke="#fff" stroke-width="15"/>
+  <path d="M158 154 L206 202" fill="none" stroke="#fff" stroke-width="25" stroke-linecap="round"/>
+  <path d="M73 130 L135 69" fill="none" stroke="#FFCE47" stroke-width="15"/>
+  <path d="M62 143 L68 118 L88 137 Z" fill="#fff"/>
+</svg>

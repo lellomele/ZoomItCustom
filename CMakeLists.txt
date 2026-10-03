@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 3.24)
+project(ZoomItCustom LANGUAGES C CXX RC)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_executable(ZoomItCustom WIN32 src/Zoomit.cpp src/SelectRectangle.cpp src/Utility.cpp src/VersionHelper.cpp src/common/dll.c src/common/WindowsVersions.cpp src/ZoomIt.rc)
+target_include_directories(ZoomItCustom PRIVATE src src/common)
+target_compile_definitions(ZoomItCustom PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00 _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(ZoomItCustom PRIVATE comctl32 comdlg32 shlwapi version winmm gdiplus msimg32 shell32 ole32 oleaut32 advapi32 user32 gdi32 magnification)
+if(MSVC)
+  target_compile_options(ZoomItCustom PRIVATE /W4 /utf-8 $<$<COMPILE_LANGUAGE:CXX>:/EHsc> $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/GL>)
+  target_link_options(ZoomItCustom PRIVATE /MANIFEST:EMBED "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/src/ZoomItCustom.manifest" $<$<CONFIG:Release>:/LTCG> /OPT:REF /OPT:ICF)
+endif()
+
+
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(ZoomItRegression tests/regression.cpp src/SelectRectangle.cpp src/Utility.cpp src/VersionHelper.cpp src/common/dll.c src/common/WindowsVersions.cpp src/ZoomIt.rc)
+  target_include_directories(ZoomItRegression PRIVATE src src/common)
+  target_compile_definitions(ZoomItRegression PRIVATE ZOOMIT_TESTING UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00 _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(ZoomItRegression PRIVATE /utf-8 /EHsc)
+  target_link_libraries(ZoomItRegression PRIVATE comctl32 comdlg32 shlwapi version winmm gdiplus msimg32 shell32 ole32 oleaut32 advapi32 user32 gdi32 magnification psapi)
+  add_test(NAME ZoomItRegression COMMAND ZoomItRegression)
+  set_tests_properties(ZoomItRegression PROPERTIES TIMEOUT 120)
+endif()
+

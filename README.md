@@ -22,7 +22,7 @@ Le impostazioni sono conservate in HKEY_CURRENT_USER\Software\ZoomItCustom\ZoomI
 
 In LiveZoom, Ctrl+Su e Ctrl+Giù regolano l'ingrandimento. Il comando Zoom (inizialmente Ctrl+1) viene ignorato mentre LiveZoom è attivo. Ctrl+3 passa al disegno statico; Esc torna a LiveZoom. Ctrl+2 chiude LiveZoom e l'eventuale LiveDraw attivo. La chiusura di LiveZoom è immediata.
 
-Nel disegno, Ctrl+Z annulla, E cancella le annotazioni e il pulsante destro torna alla visualizzazione senza disegno. Esc termina la modalità. Nel timer, le frecce regolano la durata ed Esc termina la pausa. Le scorciatoie e le altre opzioni si configurano dal menu dell'icona nell'area di notifica.
+Nel disegno, Ctrl+Z annulla ed E cancella le annotazioni. Il primo clic destro sospende il disegno: il pointer diventa un piccolo cerchio con bordo del colore attivo e interno scuro. Spostare il mouse non aggiunge tratti. Il clic sinistro ripristina il pointer precedente e permette di continuare dal punto indicato; il secondo clic destro esce dalla modalità Draw. Esc termina la modalità. Nel timer, le frecce regolano la durata ed Esc termina la pausa. Le scorciatoie e le altre opzioni si configurano dal menu dell'icona nell'area di notifica.
 
 Snip funziona anche nello zoom statico già attivo e ne mantiene la visualizzazione dopo il ritaglio o l'annullamento. Cattura ciò che appare ingrandito sullo schermo, comprese le annotazioni. Nel salvataggio, scegliere Zoomed PNG per mantenere la dimensione visibile oppure Actual size PNG per ridurla secondo il fattore di zoom. Partendo da LiveZoom, il ritaglio blocca temporaneamente l'immagine e poi ripristina LiveZoom. Snip è disabilitato quando LiveZoom e LiveDraw sono attivi contemporaneamente.
 

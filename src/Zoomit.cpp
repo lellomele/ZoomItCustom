@@ -16,6 +16,7 @@
 #include "WindowsVersions.h"
 #include "ZoomItSettings.h"
 #include "About.h"
+#include "SuspendedDrawCursor.h"
 
 
 HINSTANCE		g_hInstance;
@@ -102,6 +103,8 @@ const wchar_t* g_TestSavePath = nullptr;
 DWORD g_TestSaveFilter = 1;
 constexpr UINT WM_TEST_QUERY_MODE = WM_APP + 17;
 constexpr UINT WM_TEST_QUERY_CANVAS = WM_APP + 18;
+constexpr UINT WM_TEST_QUERY_SUSPENDED_CURSOR = WM_APP + 19;
+constexpr UINT WM_TEST_QUERY_VIEW = WM_APP + 20;
 #endif
 
 void PersistSettings();
@@ -2489,6 +2492,8 @@ LRESULT APIENTRY MainWndProc(
     static int		g_BlankedScreen = 0;
     static int		g_StraightDirection = 0;
     static BOOLEAN	g_Drawing = FALSE;
+    static bool drawingSuspended = false;
+    static zoomit::SuspendedDrawCursor suspendedCursor;
     static HWND		g_ActiveWindow = NULL;
     static int		breakTimeout;
     static HBITMAP	g_hBackgroundBmp = NULL;
@@ -2523,7 +2528,19 @@ LRESULT APIENTRY MainWndProc(
     static TCHAR	filePath[MAX_PATH] = {L"zoomit"};
     NOTIFYICONDATA	tNotifyIconData;
 
+    const auto endSuspension = [&](bool resumeDraw = false) {
+        if (!drawingSuspended) return;
+        drawingSuspended = false;
+        if (GetCapture() == hWnd) ReleaseCapture();
+        SetCursor(nullptr);
+        // LiveZoom normally displays its magnified pointer without a second hardware pointer.
+        if (pMagShowSystemCursor)
+            pMagShowSystemCursor(!IsWindowVisible(g_hWndLiveZoom) || (g_fullScreenWorkaround && !resumeDraw));
+    };
+
     const auto releaseSession = [&]() {
+        endSuspension();
+        suspendedCursor.Reset();
         DeleteDrawUndoList(&drawUndoList);
 
         DeleteDC(hdcScreenCompat); hdcScreenCompat = nullptr;
@@ -2628,6 +2645,10 @@ LRESULT APIENTRY MainWndProc(
         return TRUE;
 
     case WM_SETCURSOR:
+        if (drawingSuspended && LOWORD(lParam) == HTCLIENT) {
+            SetCursor(suspendedCursor.Get());
+            return TRUE;
+        }
         if (LOWORD(lParam) == HTCLIENT && g_Zoomed &&
             (!(GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) || g_Drawing)) {
             SetCursor(nullptr);
@@ -2642,9 +2663,18 @@ LRESULT APIENTRY MainWndProc(
 
 #ifdef ZOOMIT_TESTING
     case WM_TEST_QUERY_MODE:
-        return (g_Zoomed ? 1 : 0) | (g_Drawing ? 2 : 0) | (g_Tracing ? 4 : 0) | (g_ZoomOnLiveZoom ? 8 : 0);
+        return (g_Zoomed ? 1 : 0) | (g_Drawing ? 2 : 0) | (g_Tracing ? 4 : 0) | (g_ZoomOnLiveZoom ? 8 : 0) | (drawingSuspended ? 16 : 0);
     case WM_TEST_QUERY_CANVAS:
         return reinterpret_cast<LRESULT>(hdcScreenCompat);
+    case WM_TEST_QUERY_SUSPENDED_CURSOR:
+        return drawingSuspended ? reinterpret_cast<LRESULT>(suspendedCursor.Get()) : 0;
+    case WM_TEST_QUERY_VIEW:
+        if (lParam) {
+            int left{}, top{};
+            GetZoomedTopLeftCoordinates(zoomLevel, &cursorPos, &left, width, &top, height);
+            *reinterpret_cast<RECT*>(lParam) = {left, top, width, height};
+        }
+        return EncodeZoomLevel(zoomLevel);
 #endif
     case WM_CLOSE:
         // Do not allow users to close the main window, for example with Alt-F4.
@@ -2807,6 +2837,11 @@ LRESULT APIENTRY MainWndProc(
                     OutputDebug(L"Exiting zoom after snip\n" );
                     SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, SHALLOW_DESTROY );
                 }
+            }
+            if (drawingSuspended) {
+                SetCapture(hWnd);
+                if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+                SetCursor(suspendedCursor.Get());
             }
             break;
         }
@@ -3072,6 +3107,7 @@ LRESULT APIENTRY MainWndProc(
                 } else {
 
                     OutputDebug( L"Zoom off: don't animate=%d\n", lParam );
+                    endSuspension();
                     // turn off liveDraw
                     SetLayeredWindowAttributes(hWnd, 0, 255, LWA_ALPHA);
 
@@ -3361,6 +3397,10 @@ LRESULT APIENTRY MainWndProc(
                     *penColor |= (0xFF << 24);
                 }
                 hDrawingPen = CreatePen(PS_SOLID, g_PenWidth, *penColor & 0xFFFFFF);
+                if (drawingSuspended) {
+                    suspendedCursor.Update(g_PenColor);
+                    SetCursor(suspendedCursor.Get());
+                }
 
                 SelectObject( hdcScreenCompat, hDrawingPen );
                 if( g_Drawing ) {
@@ -3494,6 +3534,7 @@ LRESULT APIENTRY MainWndProc(
             
         case VK_ESCAPE: 
             {
+                endSuspension();
 
                 forcePenResize = TRUE;
                 PostMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
@@ -3517,6 +3558,11 @@ LRESULT APIENTRY MainWndProc(
         break;
 
     case WM_MOUSEMOVE:
+        // The native ring follows the mouse. Keep the annotation bitmap and static view unchanged.
+        if (drawingSuspended && !g_bSaveInProgress) {
+            SetCursor(suspendedCursor.Get());
+            return TRUE;
+        }
         OutputDebug(L"MOUSEMOVE: zoomed: %d drawing: %d tracing: %d\n",
             g_Zoomed, g_Drawing, g_Tracing);
 
@@ -3723,6 +3769,19 @@ LRESULT APIENTRY MainWndProc(
         return TRUE;
     
     case WM_LBUTTONDOWN:
+        if (drawingSuspended && g_Zoomed && zoomTelescopeTarget == zoomLevel) {
+            int left{}, top{};
+            GetZoomedTopLeftCoordinates(zoomLevel, &cursorPos, &left, width, &top, height);
+            const POINT point{left + static_cast<LONG>(GET_X_LPARAM(lParam) / zoomLevel),
+                              top + static_cast<LONG>(GET_Y_LPARAM(lParam) / zoomLevel)};
+            endSuspension(true);
+            SetCursorPos(monInfo.rcMonitor.left + point.x, monInfo.rcMonitor.top + point.y);
+            const LPARAM position = MAKELPARAM(point.x, point.y);
+            // Restore the previous drawing pointer without an extra undo entry, then start this stroke.
+            SendMessage(hWnd, WM_LBUTTONDOWN, static_cast<WPARAM>(-1), position);
+            SendMessage(hWnd, WM_MOUSEMOVE, 0, position);
+            return SendMessage(hWnd, WM_LBUTTONDOWN, wParam, position);
+        }
         g_StraightDirection = 0;
 
         if( g_Zoomed && zoomTelescopeTarget == zoomLevel ) {
@@ -4054,46 +4113,41 @@ LRESULT APIENTRY MainWndProc(
         break;
 
     case WM_USER_EXIT_MODE:
-        if( g_Zoomed )
-        {
-            // Turn off
-            if( !g_Drawing )
-            {
-                // Turn off
-                PostMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
-            }
-            else
-            {
-                if( !g_Tracing )
-                {
-                    RestoreCursorArea( hdcScreenCompat, hdcScreenCursorCompat, prevPt );
-
-                    // Ensure the cursor area is painted before returning
-                    InvalidateRect( hWnd, NULL, FALSE );
-                    UpdateWindow( hWnd );
-
+        if (g_Zoomed) {
+            if (!g_Drawing) {
+                if (drawingSuspended) {
+                    // The second right click follows the normal complete Draw exit, including LiveDraw cleanup.
+                    SendMessage(hWnd, WM_KEYDOWN, VK_ESCAPE, 0);
+                } else {
+                    PostMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0);
                 }
-                // Restore LiveDraw's pointer even if the user exits during an active stroke.
-                if ((GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) &&
-                    IsWindowVisible(g_hWndLiveZoom))
-                    SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
-                if( zoomLevel != 1 )
-                {
-                    // Restore the cursor position to prevent moving the view in static zoom
-                    SetCursorPos( monInfo.rcMonitor.left + cursorPos.x, monInfo.rcMonitor.top + cursorPos.y );
-                }
+            } else {
+                // Commit a stroke/shape in progress before removing the temporary coloured pointer.
+                if (g_Tracing)
+                    SendMessage(hWnd, WM_LBUTTONUP, 0, MAKELPARAM(prevPt.x, prevPt.y));
+                RestoreCursorArea(hdcScreenCompat, hdcScreenCursorCompat, prevPt);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                UpdateWindow(hWnd);
+
+                int left{}, top{};
+                GetZoomedTopLeftCoordinates(zoomLevel, &cursorPos, &left, width, &top, height);
+                const POINT visiblePoint{
+                    (std::clamp)(static_cast<LONG>((prevPt.x - left) * zoomLevel), 0L, static_cast<LONG>(width - 1)),
+                    (std::clamp)(static_cast<LONG>((prevPt.y - top) * zoomLevel), 0L, static_cast<LONG>(height - 1))};
                 g_Drawing = FALSE;
                 g_Tracing = FALSE;
-                EnableDisableStickyKeys( TRUE );
-
-                // Unclip cursor
-                ClipCursor( NULL );
+                drawingSuspended = true;
+                EnableDisableStickyKeys(TRUE);
+                ClipCursor(nullptr);
+                suspendedCursor.Update(g_PenColor);
+                // Capture also makes the next click reach Draw through LiveDraw's transparent background.
+                SetCapture(hWnd);
+                if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+                SetCursor(suspendedCursor.Get());
+                SetCursorPos(monInfo.rcMonitor.left + visiblePoint.x, monInfo.rcMonitor.top + visiblePoint.y);
             }
-        }
-        else if( g_TimerActive )
-        {
-            // Turn off
-            PostMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
+        } else if (g_TimerActive) {
+            PostMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0);
         }
         break;
 
@@ -4840,6 +4894,7 @@ LRESULT APIENTRY MainWndProc(
         return TRUE;
 
     case WM_DESTROY:
+        endSuspension();
 
         KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3);
         if (g_TimerActive) EnableDisableScreenSaver(TRUE);

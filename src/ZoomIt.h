@@ -21,6 +21,8 @@ typedef HRESULT (__stdcall * type_pEnableThemeDialogTexture)(
 type_pEnableThemeDialogTexture    pEnableThemeDialogTexture;
 
 // For testing anti-aliased bitmap stretching
+#define SCALE_GDIPLUS		0
+#define SCALE_HALFTONE		0
 
 // sent in mouse message when coming from tablet pen
 #define MI_WP_SIGNATURE		0xFF515700
@@ -59,9 +61,6 @@ type_pEnableThemeDialogTexture    pEnableThemeDialogTexture;
 #define WM_USER_EXIT_MODE		WM_USER+109
 #define WM_USER_RELOAD_SETTINGS	WM_USER+110
 #define WM_USER_RESTORE_SYSTEM_POINTER (WM_USER+120)
-#define WM_USER_CHECK_DISPLAYS (WM_USER+121)
-#define WM_USER_END_SESSION (WM_USER+122)
-#define WM_USER_CAPTURE_SESSION (WM_USER+123)
 
 typedef struct _DRAW_UNDO {
     HDC			hDc;
@@ -87,9 +86,9 @@ typedef struct {
 #define DRAW_LINE		3
 #define DRAW_ARROW		4
 
-#define CAPTURE_KEEP_POINTER    1
-#define CAPTURE_CLOSE_NOW 2
-#define CAPTURE_LIVE_DRAW   3
+#define SHALLOW_ZOOM    1
+#define SHALLOW_DESTROY 2
+#define LIVE_DRAW_ZOOM   3
 
 #define PEN_COLOR_HIGHLIGHT(Pencolor)	(Pencolor >> 24) != 0xFF
 
@@ -187,9 +186,8 @@ public:
     {
         Gdiplus::GdiplusStartupOutput	startupOut;
         Gdiplus::GdiplusStartupInput	startupIn;
-        if (Gdiplus::GdiplusStartup(&m_Token, &startupIn, &startupOut) != Gdiplus::Ok) m_Token=0;
+        Gdiplus::GdiplusStartup( &m_Token, &startupIn, &startupOut );
     }
-    bool ready() const noexcept {return m_Token!=0;}
     ~ComputerGraphicsInit()
     {
         if(m_Token) Gdiplus::GdiplusShutdown(m_Token);

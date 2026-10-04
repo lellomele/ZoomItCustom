@@ -21,9 +21,10 @@
 #define IDC_DRAW                        1007
 #define IDC_TITLE                       1008
 #define IDC_VERSION                     1008
-#define IDC_LIVE_ZOOM                   1009
+#define IDC_ZOOM                        1009
 #define IDC_DRAWING                     1010
 #define IDC_BREAK                       1011
+#define IDC_HOTKEY                      1014
 #define IDC_DRAW_HOTKEY                 1015
 #define IDC_HOTKEY2                     1015
 #define IDC_LIVE_HOTKEY                 1015
@@ -65,6 +66,7 @@
 #define IDC_ZOOM_SPIN                   1052
 #define IDC_ZOOM_LEVEL                  1053
 #define IDC_ZOOM_SLIDER                 1056
+#define IDC_ANIMATE_ZOOM                1057
 #define IDC_COMBO1                      1058
 #define IDC_SPIN1                       1059
 #define IDC_SNIP_HOTKEY                 1060

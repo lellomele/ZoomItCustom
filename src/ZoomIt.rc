@@ -161,23 +161,42 @@ BEGIN
     CONTROL         "",IDC_STATIC,"Static",SS_BLACKFRAME | SS_SUNKEN,7,196,193,1,WS_EX_CLIENTEDGE
 END
 
+ZOOM DIALOGEX 0, 0, 260, 158
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS | WS_SYSMENU
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,59,57,80,12
+    LTEXT           "After toggling ZoomIt you can zoom in with the mouse wheel or up and down arrow keys. Exit zoom mode with Escape or by pressing the right mouse button.",IDC_STATIC,7,6,246,26
+    LTEXT           "Zoom Toggle:",IDC_STATIC,7,59,51,8
+    CONTROL         "",IDC_ZOOM_SLIDER,"msctls_trackbar32",TBS_AUTOTICKS | TBS_BOTH | TBS_NOTICKS | WS_TABSTOP,53,104,150,15,WS_EX_TRANSPARENT
+    LTEXT           "Specify the initial level of magnification when zooming in:",IDC_STATIC,7,91,215,10
+    LTEXT           "1.25",IDC_STATIC,52,122,16,8
+    LTEXT           "1.5",IDC_STATIC,82,122,12,8
+    LTEXT           "1.75",IDC_STATIC,108,122,16,8
+    LTEXT           "2.0",IDC_STATIC,138,122,12,8
+    LTEXT           "3.0",IDC_STATIC,164,122,12,8
+    LTEXT           "4.0",IDC_STATIC,190,122,12,8
+    CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,74,116,10
+    LTEXT           "Copy a zoomed screen with Ctrl+C or save it by typing Ctrl+S. Crop the copy or save region by entering Ctrl+Shift instead of Ctrl.",IDC_STATIC,7,34,246,17
+END
+
 DRAW DIALOGEX 0, 0, 260, 228
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "Ctrl+3 draws on the desktop or LiveZoom. Ctrl+Z undoes; E clears. Right-click once to pause the pen and show the mouse pointer, twice to close Draw. Ctrl+3 resumes; Escape closes.",IDC_STATIC,7,7,246,27
+    LTEXT           "Once zoomed, toggle drawing mode by pressing the left mouse button. Undo with Ctrl+Z and all drawing by pressing E. Center the cursor with the space bar. Exit drawing mode by pressing the right mouse button.",IDC_STATIC,7,7,246,24
     LTEXT           "Pen Control ",IDC_PEN_CONTROL,7,38,40,8
     LTEXT           "Change the pen width by pressing left Ctrl and using the mouse wheel or the up and down arrow keys.",IDC_STATIC,19,48,233,16
     LTEXT           "Colors",IDC_COLORS,7,70,21,8
     LTEXT           "Change the pen color by pressing R (red), G (green), B (blue),\nO (orange), Y (yellow) or P (pink).",IDC_STATIC,19,80,233,16
     LTEXT           "Highlight and Blur",IDC_HIGHLIGHT_AND_BLUR,7,102,58,8
-    LTEXT           "On desktop drawings, Shift+color highlights; X blurs and Shift+X blurs more. Highlight and blur are unavailable in LiveDraw.",IDC_STATIC,19,113,233,17
+    LTEXT           "Hold Shift while pressing a color key for a translucent highlighter color. Press X for blur or Shift+X for a stronger blur.",IDC_STATIC,19,113,233,16
     LTEXT           "Shapes",IDC_SHAPES,7,134,23,8
     LTEXT           "Draw a line by holding down the Shift key, a rectangle with the Ctrl key, an ellipse with the Tab key and an arrow with Shift+Ctrl.",IDC_STATIC,19,144,233,16
     LTEXT           "Screen",IDC_SCREEN,7,166,22,8
-    LTEXT           "Clear the desktop drawing background with W (white) or K (black). Copy with Ctrl+C or save with Ctrl+S; use Ctrl+Shift+C or Ctrl+Shift+S to select a region.",IDC_STATIC,19,176,233,24
+    LTEXT           "Clear the screen for a sketch pad by pressing W (white) or K (black). Copy a zoomed screen with Ctrl+C or save it by typing Ctrl+S. Crop the copy or save region by entering Ctrl+Shift instead of Ctrl.",IDC_STATIC,19,176,233,24
     CONTROL         "",IDC_DRAW_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,73,207,80,12
-    LTEXT           "Draw Toggle:",IDC_STATIC,7,210,63,11
+    LTEXT           "Draw w/out Zoom:",IDC_STATIC,7,210,63,11
 END
 
 
@@ -201,24 +220,17 @@ END
 
 
 
-LIVEZOOM DIALOGEX 0, 0, 260, 228
+LIVEZOOM DIALOGEX 0, 0, 260, 134
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "LiveZoom magnifies the desktop while applications continue to update. Supported on updated Windows 10 and Windows 11.",IDC_STATIC,7,7,246,24
-    LTEXT           "Use Ctrl+Up and Ctrl+Down to change magnification. Move the mouse to pan across the desktop.",IDC_STATIC,7,39,246,20
-    LTEXT           "Press Ctrl+3 to draw on LiveZoom. Ctrl+2 is ignored while drawing or when annotations are visible, so your drawing stays on screen.",IDC_STATIC,7,66,246,27
-    LTEXT           "LiveZoom Toggle:",IDC_STATIC,7,106,62,8
-    CONTROL         "",IDC_LIVE_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,72,104,80,12
-    LTEXT           "Initial magnification:",IDC_STATIC,7,132,246,10
-    CONTROL         "",IDC_ZOOM_SLIDER,"msctls_trackbar32",TBS_NOTICKS | WS_TABSTOP,52,151,156,15
-    LTEXT           "1.25x",IDC_STATIC,52,170,22,8
-    LTEXT           "1.5x",IDC_STATIC,82,170,19,8
-    LTEXT           "1.75x",IDC_STATIC,108,170,22,8
-    LTEXT           "2x",IDC_STATIC,140,170,13,8
-    LTEXT           "3x",IDC_STATIC,166,170,13,8
-    LTEXT           "4x",IDC_STATIC,192,170,13,8
-    LTEXT           "",IDC_LIVE_STATUS,7,204,246,17
+    LTEXT           "",IDC_LIVE_STATUS,7,123,246,10
+    CONTROL         "",IDC_LIVE_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,69,108,80,12
+    LTEXT           "LiveZoom mode is supported on updated Windows 10 and Windows 11 where window updates show while zoomed. ",IDC_STATIC,7,7,246,18
+    LTEXT           "LiveZoom Toggle:",IDC_STATIC,7,110,62,8
+    LTEXT           "To enter and exit LiveZoom, enter the hotkey specified below.",IDC_STATIC,7,94,218,13
+    LTEXT           "Note that in LiveZoom you must use Ctrl+Up and Ctrl+Down to control the zoom level. To enter drawing mode, use the standard zoom-without-draw hotkey and then escape to go back to LiveZoom.",IDC_STATIC,7,30,246,27
+    LTEXT           "Use LiveDraw to draw and annotate the live desktop. To activate LiveDraw, enter the hotkey with the Shift key in the opposite mode. You can remove LiveDraw annotations by activating LiveDraw and enter the escape key",IDC_STATIC,7,62,246,32
 END
 
 
@@ -241,7 +253,7 @@ BEGIN
     ICON            "APPICON",IDC_STATIC,9,9,24,24
     LTEXT           "ZoomIt Custom",IDC_ABOUT_TITLE,42,10,211,12
     LTEXT           FILE_VERSION_STRING,IDC_ABOUT_VERSION,42,25,211,10
-    LTEXT           "Live magnification, drawing and screen snips.",IDC_STATIC,7,46,246,18
+    LTEXT           "Screen magnification, drawing, LiveZoom and screen snips.",IDC_STATIC,7,46,246,18
     GROUPBOX        "Custom edition",IDC_STATIC,7,71,246,45
     LTEXT           "(C) 2026 Prof. ing. Raffaele Mele",IDC_ABOUT_COPYRIGHT,15,85,230,10
     CONTROL         "<a HREF=""https://github.com/lellomele/ZoomItCustom"">GitHub: lellomele/ZoomItCustom</a>",IDC_ABOUT_REPOSITORY,
@@ -276,6 +288,14 @@ BEGIN
         BOTTOMMARGIN, 215
     END
 
+    "ZOOM", DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 253
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 151
+    END
+
     "DRAW", DIALOG
     BEGIN
         LEFTMARGIN, 7
@@ -299,7 +319,7 @@ BEGIN
         LEFTMARGIN, 7
         RIGHTMARGIN, 253
         TOPMARGIN, 7
-        BOTTOMMARGIN, 221
+        BOTTOMMARGIN, 127
     END
 
 
@@ -358,6 +378,11 @@ BEGIN
 END
 
 
+
+ZOOM AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
 
 SNIP AFX_DIALOG_LAYOUT
 BEGIN

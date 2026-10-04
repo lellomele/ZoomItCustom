@@ -11,6 +11,10 @@
 
 namespace zoomit::about {
 
+inline const wchar_t* WindowTitle() noexcept {
+    return ZOOMIT_ABOUT_WIDE(PRODUCT_NAME) L" " ZOOMIT_ABOUT_WIDE(FILE_VERSION_STRING);
+}
+
 inline void Initialize(HWND dialog) {
     if (!GetDlgItem(dialog, IDC_ABOUT_VERSION)) return;
     SetDlgItemTextW(dialog, IDC_ABOUT_VERSION,

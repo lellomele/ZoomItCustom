@@ -6,12 +6,13 @@ Applicazione portatile per Windows per ingrandire lo schermo, disegnare e mostra
 
 Scaricare [il pacchetto portatile o l’eseguibile dalla pagina delle release](https://github.com/lellomele/ZoomItCustom/releases/latest). Estrarre il pacchetto portatile e avviare ZoomItCustom.exe. Chiudere eventuali altre istanze di ZoomIt che utilizzano le stesse scorciatoie.
 
-Le impostazioni sono conservate in HKEY_CURRENT_USER\Software\ZoomItCustom\ZoomIt Custom; l'avvio automatico usa la voce ZoomIt Custom. Al primo avvio dopo l’aggiornamento dalla precedente mappatura, le scorciatoie vengono impostate come indicato sotto; le successive personalizzazioni vengono conservate.
+Le impostazioni sono conservate in HKEY_CURRENT_USER\Software\ZoomItCustom\ZoomIt Custom; l'avvio automatico usa la voce ZoomIt Custom. Al primo avvio dopo l’aggiornamento dalla precedente mappatura, le cinque scorciatoie vengono impostate come indicato sotto; le successive personalizzazioni vengono conservate.
 
 ## Uso
 
 | Scorciatoia iniziale | Funzione |
 | --- | --- |
+| Ctrl+1 | Zoom statico |
 | Ctrl+2 | LiveZoom |
 | Ctrl+3 | Disegno |
 | Ctrl+4 | Pausa con timer |
@@ -19,21 +20,21 @@ Le impostazioni sono conservate in HKEY_CURRENT_USER\Software\ZoomItCustom\ZoomI
 | Ctrl+Shift+2 | LiveDraw |
 | Ctrl+Shift+5 | Salva un ritaglio PNG |
 
-In LiveZoom, Ctrl+Su e Ctrl+Giù regolano l'ingrandimento. Ctrl+3 attiva LiveDraw mantenendo la visualizzazione in diretta; sul desktop, Ctrl+3 apre il disegno senza ingrandimento. Ctrl+2 apre e chiude LiveZoom, ma viene ignorato quando la penna o le annotazioni sono presenti, anche dopo aver sospeso il disegno con il pulsante destro. Esc chiude il disegno; in LiveDraw lascia LiveZoom attivo. Ctrl+1 è libero. La scheda LiveZoom permette di scegliere l'ingrandimento iniziale.
+In LiveZoom, Ctrl+Su e Ctrl+Giù regolano l'ingrandimento. Il comando Zoom (inizialmente Ctrl+1) viene ignorato mentre LiveZoom è attivo. Ctrl+3 passa al disegno statico; Esc torna a LiveZoom. Ctrl+2 chiude LiveZoom e l'eventuale LiveDraw attivo. La chiusura di LiveZoom è immediata.
 
-Nel disegno, Ctrl+Z annulla, E cancella le annotazioni e il primo clic destro sospende la penna e mostra il puntatore del mouse, mantenendo le annotazioni; il secondo clic destro chiude Draw. Un clic sinistro o Ctrl+3 riattiva la penna. Esc termina la modalità. Nel timer, le frecce regolano la durata ed Esc termina la pausa. Le scorciatoie e le altre opzioni si configurano dal menu dell'icona nell'area di notifica.
+Nel disegno, Ctrl+Z annulla, E cancella le annotazioni e il pulsante destro torna alla visualizzazione senza disegno. Esc termina la modalità. Nel timer, le frecce regolano la durata ed Esc termina la pausa. Le scorciatoie e le altre opzioni si configurano dal menu dell'icona nell'area di notifica.
 
-Snip cattura ciò che appare sullo schermo, comprese le annotazioni del disegno sul desktop, che vengono conservate dopo il ritaglio o l'annullamento. Nel salvataggio da LiveZoom, scegliere Zoomed PNG per mantenere la dimensione visibile oppure Actual size PNG per ridurla secondo il fattore di ingrandimento. Partendo da LiveZoom, il ritaglio blocca temporaneamente l'immagine e poi ripristina LiveZoom. Snip è disabilitato quando LiveDraw è attivo.
+Snip funziona anche nello zoom statico già attivo e ne mantiene la visualizzazione dopo il ritaglio o l'annullamento. Cattura ciò che appare ingrandito sullo schermo, comprese le annotazioni. Nel salvataggio, scegliere Zoomed PNG per mantenere la dimensione visibile oppure Actual size PNG per ridurla secondo il fattore di zoom. Partendo da LiveZoom, il ritaglio blocca temporaneamente l'immagine e poi ripristina LiveZoom. Snip è disabilitato quando LiveZoom e LiveDraw sono attivi contemporaneamente.
 
 ## Requisiti e limiti
 
 Windows 10 o Windows 11 aggiornati, a 64 bit. L'eseguibile non è firmato digitalmente. Non occorre installare il runtime C++.
 
-La cronologia del disegno conserva fino a 32 immagini, con un budget indicativo di 64 MiB: fino a 8 immagini Full HD o 2 immagini 4K. Conserva sempre almeno un annullamento, anche se una singola immagine supera il budget. Le immagini necessarie al disegno e a Snip richiedono ulteriore memoria, proporzionale alla risoluzione.
+La cronologia del disegno conserva fino a 32 immagini, con un budget indicativo di 64 MiB: fino a 8 immagini Full HD o 2 immagini 4K. Conserva sempre almeno un annullamento, anche se una singola immagine supera il budget. Le immagini necessarie al disegno e allo zoom richiedono ulteriore memoria, proporzionale alla risoluzione.
 
 Il percorso LiveZoom per Windows Server 2022 e Windows 11 21H2 prima della revisione 829 richiede privilegi UIAccess. In questa distribuzione portatile tali privilegi non sono disponibili: LiveZoom viene disabilitato su queste build e le opzioni mostrano un avviso. Usare una versione aggiornata di Windows 10/11. Il requisito è documentato da [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/magnification/nf-magnification-magsetinputtransform).
 
-Quando cambia la configurazione degli schermi, la modalità attiva viene chiusa e il programma resta disponibile. In modalità Duplica, gli schermi condividono un unico desktop; il timer usa un secondo desktop solo se già disponibile. Il corretto funzionamento con più monitor a DPI differenti, desktop remoto, touch e penna non è garantito.
+Il corretto funzionamento con più monitor a DPI differenti, desktop remoto, touch e penna non è garantito.
 
 ## Compilazione
 
@@ -51,7 +52,7 @@ Per eseguire anche le prove sul desktop:
 
 Queste prove mostrano temporaneamente zoom e finestre dell'applicazione.
 
-La scheda About, dopo Snip, riporta versione, autore, origine e licenza. L'icona è integrata nell'eseguibile e nelle finestre. I sorgenti grafici e le dimensioni di distribuzione sono in assets; generate-icon.ps1 rigenera PNG e ICO.
+La scheda About, dopo Snip, riporta versione, autore, origine e licenza. Il numero di versione compare nella barra del titolo delle opzioni. L'icona è integrata nell'eseguibile e nelle finestre. I sorgenti grafici e le dimensioni di distribuzione sono in assets; generate-icon.ps1 rigenera PNG e ICO.
 
 ## Origine e copyright
 

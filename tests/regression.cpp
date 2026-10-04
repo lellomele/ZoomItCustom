@@ -357,6 +357,12 @@ int main(int argc, char** argv) {
             return snapshot;
         };
         size_t protectedLiveHotkeys=0, protectedDrawCases=0, liveEraseCases=0;
+        size_t rightClickPauseCases=0, rightClickCloseCases=0, leftClickResumeCases=0, degenerateShapeCases=0;
+        auto requireArrow=[&](const char* message) {
+            CURSORINFO cursor{sizeof(cursor)};
+            require(GetCursorInfo(&cursor)!=FALSE,"Inspect system pointer during pen suspension");
+            require((cursor.flags&CURSOR_SHOWING) && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW),message);
+        };
         auto annotationSample=[&] {
             DrawingDib region(canvasState().canvas,Gdiplus::Rect(148,148,12,5));
             require(region.pixels()!=nullptr,"Erasure test must inspect real drawing pixels");
@@ -438,8 +444,23 @@ int main(int argc, char** argv) {
                 SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(175,150));
             }
             SetCursorPos(175,150); pump(5);
+            const auto completedAnnotations=annotationSample();
+            const auto completedState=canvasState();
             SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,MAKELPARAM(175,150));
+            requireArrow("The first right-click must immediately restore a visible arrow while retaining Draw");
             require((modeState()&7)==1 && canvasState().haveDrawn,"Right-click must suspend the pen while keeping the drawing");
+            require(annotationSample()==completedAnnotations && canvasState().undoCount==completedState.undoCount,
+                    "Suspending a completed drawing must preserve its annotation pixels and undo history");
+            const auto suspended=snapshotCanvas();
+            SendMessage(g_hWndMain,WM_SETCURSOR,reinterpret_cast<WPARAM>(g_hWndMain),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+            SendMessage(g_hWndMain,WM_MOUSEMOVE,0,MAKELPARAM(180,155)); pump(15);
+            requireArrow("The arrow must remain visible after cursor refresh and mouse movement with the pen suspended");
+            const auto afterMovement=snapshotCanvas();
+            require(afterMovement.state.canvas==suspended.state.canvas && afterMovement.state.undoCount==suspended.state.undoCount &&
+                    afterMovement.state.haveDrawn==suspended.state.haveDrawn && afterMovement.mode==suspended.mode &&
+                    afterMovement.rgb==suspended.rgb && afterMovement.live==suspended.live,
+                    "Mouse movement with a suspended pen must not erase annotations, restart tracing or replace the canvas");
+            ++rightClickPauseCases;
             protectDrawing();
             if(live) eraseLiveDrawing(false);
             SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
@@ -464,6 +485,74 @@ int main(int argc, char** argv) {
                 require(IsWindowVisible(g_hWndLiveZoom),"Leaving LiveDraw must preserve its running LiveZoom");
                 SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(20);
                 require(!IsWindow(g_hWndLiveZoom),"Ctrl+2 must close LiveZoom after the drawing has explicitly ended");
+            }
+        }
+        for(int scenario=0;scenario<3;++scenario) {
+            const bool live=scenario!=0;
+            g_fullScreenWorkaround=scenario==2;
+            SetForegroundWindow(host); SetCursorPos(125,125);
+            if(live) {
+                SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(100);
+            }
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3')); pump(25);
+            SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(150,150));
+            SendMessage(g_hWndMain,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(175,150));
+            SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(175,150));
+            SetCursorPos(175,150); pump(5);
+            SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(175,150));
+            require((modeState()&7)==7,"Right-click regression must begin while a stroke is active");
+            const auto activeAnnotations=annotationSample();
+            const auto activeState=canvasState();
+            SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,MAKELPARAM(175,150));
+            requireArrow("Right-click during a stroke must immediately restore a visible arrow");
+            require((modeState()&7)==1 && canvasState().haveDrawn &&
+                    canvasState().undoCount==activeState.undoCount && annotationSample()==activeAnnotations,
+                    "Right-click during a stroke must suspend tracing while retaining annotations and undo history");
+            SendMessage(g_hWndMain,WM_SETCURSOR,reinterpret_cast<WPARAM>(g_hWndMain),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+            SendMessage(g_hWndMain,WM_MOUSEMOVE,0,MAKELPARAM(180,155)); pump(15);
+            requireArrow("The arrow must survive cursor refresh after interrupting an active stroke");
+            require((modeState()&7)==1 && canvasState().undoCount==activeState.undoCount &&
+                    annotationSample()==activeAnnotations,"Suspended strokes must remain unchanged after mouse movement");
+            ++rightClickPauseCases;
+            for(bool releaseBeforeRight : {false,true}) {
+                const auto pausedAnnotations=annotationSample();
+                SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(175,150));
+                require((modeState()&7)==3 && canvasState().haveDrawn && annotationSample()==pausedAnnotations,
+                        "Left-click must reactivate a suspended pen without starting a stroke or erasing annotations");
+                CURSORINFO resumedCursor{sizeof(resumedCursor)};
+                require(GetCursorInfo(&resumedCursor) && !(resumedCursor.flags&CURSOR_SHOWING),
+                        "Left-click must hide the arrow immediately when the pen is reactivated");
+                if(live && !g_fullScreenWorkaround)
+                    require(!(GetWindowLong(g_hWndLiveZoomMag,GWL_STYLE)&MS_SHOWMAGNIFIEDCURSOR),
+                            "Left-click pen reactivation must hide the magnified pointer");
+                ++leftClickResumeCases;
+                SendMessage(g_hWndMain,WM_LBUTTONDOWN,MK_CONTROL,MAKELPARAM(160,150));
+                require((modeState()&7)==7,"Degenerate rectangle test must begin tracing without mouse movement");
+                if(releaseBeforeRight) {
+                    SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(160,150));
+                    require((modeState()&7)==3,"A rectangle with no movement must finish without retaining tracing state");
+                }
+                const auto beforeShapeRight=snapshotCanvas();
+                SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,MAKELPARAM(160,150));
+                const auto afterShapeRight=snapshotCanvas();
+                require((modeState()&7)==1 && afterShapeRight.state.haveDrawn &&
+                        afterShapeRight.state.undoCount==beforeShapeRight.state.undoCount &&
+                        afterShapeRight.state.canvas==beforeShapeRight.state.canvas &&
+                        afterShapeRight.rgb==beforeShapeRight.rgb,
+                        "Right-click after a shape with no movement must preserve every annotation pixel and undo entry");
+                requireArrow("Suspending a shape with no movement must restore the visible arrow");
+                ++rightClickPauseCases; ++degenerateShapeCases;
+            }
+            SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,MAKELPARAM(175,150)); pump(30);
+            require(modeState()==0 && !IsWindowVisible(g_hWndMain),"The second right-click must close the drawing canvas");
+            require((IsWindowVisible(g_hWndLiveZoom)!=FALSE)==live,
+                    "Closing Draw with the second right-click must preserve LiveZoom when it was running");
+            requireArrow("The second right-click must leave a visible arrow on the desktop or LiveZoom");
+            ++rightClickCloseCases;
+            if(live) {
+                SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(20);
+                require(!IsWindow(g_hWndLiveZoom),"LiveZoom must close normally after Draw has ended");
+                requireArrow("Closing LiveZoom after two right-clicks must retain the system arrow");
             }
         }
         g_fullScreenWorkaround=false;
@@ -672,6 +761,8 @@ int main(int argc, char** argv) {
         SetCursorPos(oldCursor.x,oldCursor.y);
         std::cout<<"{\"passed\":true,\"live_draw_cycles\":"<<drawCycleCount<<",\"undo_1080p_entries\":"<<count
           <<",\"protected_draw_cases\":"<<protectedDrawCases<<",\"protected_live_hotkeys\":"<<protectedLiveHotkeys
+          <<",\"right_click_pause_cases\":"<<rightClickPauseCases<<",\"right_click_close_cases\":"<<rightClickCloseCases
+          <<",\"left_click_resume_cases\":"<<leftClickResumeCases<<",\"degenerate_shape_cases\":"<<degenerateShapeCases
           <<",\"live_erase_cases\":"<<liveEraseCases<<",\"live_toggle_events\":"<<liveToggleCount<<",\"effect_operations\":1200,\"effects_milliseconds\":"<<effectsMilliseconds
           <<",\"effect_gdi_before\":"<<effectsBefore<<",\"effect_gdi_after\":"<<effectsAfter
           <<",\"effect_private_before\":"<<effectMemoryBefore<<",\"effect_private_after\":"<<effectMemoryAfter

@@ -165,7 +165,7 @@ DRAW DIALOGEX 0, 0, 260, 228
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "Press Ctrl+3 to draw on the desktop, or use LiveDraw when LiveZoom is active. Undo with Ctrl+Z and clear all drawing with E. Exit drawing mode with the right mouse button or Escape.",IDC_STATIC,7,7,246,27
+    LTEXT           "Ctrl+3 draws on the desktop or LiveZoom. Ctrl+Z undoes; E clears. Right-click once to pause the pen and show the mouse pointer, twice to close Draw. Ctrl+3 resumes; Escape closes.",IDC_STATIC,7,7,246,27
     LTEXT           "Pen Control ",IDC_PEN_CONTROL,7,38,40,8
     LTEXT           "Change the pen width by pressing left Ctrl and using the mouse wheel or the up and down arrow keys.",IDC_STATIC,19,48,233,16
     LTEXT           "Colors",IDC_COLORS,7,70,21,8

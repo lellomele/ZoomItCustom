@@ -2536,9 +2536,8 @@ LRESULT APIENTRY MainWndProc(
         return 0;
 
     case WM_SETCURSOR:
-        if (LOWORD(lParam) == HTCLIENT && captureActive &&
-            (!(GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) || g_Drawing)) {
-            SetCursor(nullptr);
+        if (LOWORD(lParam) == HTCLIENT && captureActive) {
+            SetCursor(g_Drawing ? nullptr : LoadCursor(nullptr, IDC_ARROW));
             return TRUE;
         }
         break;
@@ -2585,10 +2584,6 @@ LRESULT APIENTRY MainWndProc(
                 SetForegroundWindow(hWnd);
                 SendMessage(hWnd, WM_LBUTTONDOWN, 0, MAKELPARAM(cursorPos.x, cursorPos.y));
                 SendMessage(hWnd, WM_MOUSEMOVE, 0, MAKELPARAM(cursorPos.x, cursorPos.y));
-                if( IsWindowVisible( g_hWndLiveZoom ) )
-                {
-                    SendMessage( g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, FALSE, 0 );
-                }
                 break;
             }
             else {
@@ -3713,6 +3708,11 @@ LRESULT APIENTRY MainWndProc(
                         &g_Drawing, g_LiveZoomLevel, FALSE, g_RootPenWidth );
                 }
                 g_Drawing = TRUE;
+                SetCursor(nullptr);
+                if ((GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) &&
+                    IsWindowVisible(g_hWndLiveZoom)) {
+                    SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, FALSE, 0);
+                }
 
                 EnableDisableStickyKeys( FALSE );
                 OutputDebug( L"LBUTTONDOWN: %d, %d\n", prevPt.x, prevPt.y );
@@ -3816,6 +3816,11 @@ LRESULT APIENTRY MainWndProc(
                 prevPt.x = LOWORD( lParam );
                 prevPt.y = HIWORD( lParam );
                 SaveCursorArea( hdcScreenCursorCompat, hdcScreenCompat, prevPt );
+            } else {
+                // A shape with no movement has no outline or saved cursor at its anchor.
+                prevPt.x = LOWORD(lParam);
+                prevPt.y = HIWORD(lParam);
+                SaveCursorArea(hdcScreenCursorCompat, hdcScreenCompat, prevPt);
             }
             g_Tracing = FALSE;
             g_DrawingShape = FALSE;
@@ -3901,40 +3906,39 @@ LRESULT APIENTRY MainWndProc(
         break;
 
     case WM_USER_EXIT_MODE:
-        if( captureActive )
-        {
-            // Turn off
-            if( !g_Drawing )
-            {
-                // Turn off
-                PostMessage(hWnd, WM_USER_END_SESSION, 0, 0);
-            }
-            else
-            {
-                if( !g_Tracing )
-                {
-                    RestoreCursorArea( hdcScreenCompat, hdcScreenCursorCompat, prevPt );
-
-                    // Ensure the cursor area is painted before returning
-                    InvalidateRect( hWnd, NULL, FALSE );
-                    UpdateWindow( hWnd );
-
+        if (captureActive) {
+            if (!g_Drawing) {
+                // Use the same teardown as Escape, including LiveDraw's overlay.
+                SendMessage(hWnd, WM_KEYDOWN, VK_ESCAPE, 0);
+            } else {
+                if (g_Tracing) {
+                    POINT finishPoint = prevPt;
+                    const LPARAM previousExtraInfo = GetMessageExtraInfo();
+                    if (g_PenDown) {
+                        // Synthetic pen events expect screen coordinates and a pen signature.
+                        finishPoint.x += monInfo.rcMonitor.left - (boundRc.left - monInfo.rcMonitor.left);
+                        finishPoint.y += monInfo.rcMonitor.top - (boundRc.top - monInfo.rcMonitor.top);
+                        SetMessageExtraInfo(static_cast<LPARAM>(MI_WP_SIGNATURE));
+                    }
+                    SendMessage(hWnd, WM_LBUTTONUP, 0, MAKELPARAM(finishPoint.x, finishPoint.y));
+                    if (g_PenDown) SetMessageExtraInfo(previousExtraInfo);
                 }
-                // Restore LiveDraw's pointer even if the user exits during an active stroke.
-                if ((GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) &&
-                    IsWindowVisible(g_hWndLiveZoom))
-                    SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
+                RestoreCursorArea(hdcScreenCompat, hdcScreenCursorCompat, prevPt);
                 g_Drawing = FALSE;
                 g_Tracing = FALSE;
-                EnableDisableStickyKeys( TRUE );
-
-                // Unclip cursor
-                ClipCursor( NULL );
+                g_DrawingShape = 0;
+                EnableDisableStickyKeys(TRUE);
+                ClipCursor(nullptr);
+                SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                if (IsWindowVisible(g_hWndLiveZoom)) {
+                    SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
+                } else {
+                    RestoreSystemPointer();
+                }
+                InvalidateRect(hWnd, nullptr, FALSE);
+                UpdateWindow(hWnd);
             }
-        }
-        else if( g_TimerActive )
-        {
-            // Turn off
+        } else if (g_TimerActive) {
             PostMessage(hWnd, WM_USER_END_SESSION, 0, 0);
         }
         break;

@@ -61,6 +61,8 @@ type_pEnableThemeDialogTexture    pEnableThemeDialogTexture;
 #define WM_USER_EXIT_MODE		WM_USER+109
 #define WM_USER_RELOAD_SETTINGS	WM_USER+110
 #define WM_USER_RESTORE_SYSTEM_POINTER (WM_USER+120)
+#define WM_USER_CHECK_DISPLAYS (WM_USER+121)
+#define WM_USER_END_SESSION (WM_USER+122)
 
 typedef struct _DRAW_UNDO {
     HDC			hDc;
@@ -186,8 +188,9 @@ public:
     {
         Gdiplus::GdiplusStartupOutput	startupOut;
         Gdiplus::GdiplusStartupInput	startupIn;
-        Gdiplus::GdiplusStartup( &m_Token, &startupIn, &startupOut );
+        if (Gdiplus::GdiplusStartup(&m_Token, &startupIn, &startupOut) != Gdiplus::Ok) m_Token=0;
     }
+    bool ready() const noexcept {return m_Token!=0;}
     ~ComputerGraphicsInit()
     {
         if(m_Token) Gdiplus::GdiplusShutdown(m_Token);

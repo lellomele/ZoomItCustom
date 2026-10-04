@@ -119,10 +119,8 @@ FONT 8, "MS Shell Dlg", 0, 0, 0x0
 BEGIN
     DEFPUSHBUTTON   "OK",IDOK,166,306,50,14
     PUSHBUTTON      "Cancel",IDCANCEL,223,306,50,14
-    LTEXT           "ZoomIt Custom 1.0",IDC_VERSION,42,7,73,10
-    LTEXT           "Copyright � 2006-2024 Mark Russinovich",IDC_COPYRIGHT,42,17,166,8
-    CONTROL         "<a HREF=""https://www.sysinternals.com"">Sysinternals - www.sysinternals.com</a>",IDC_LINK,
-                    "SysLink",WS_TABSTOP,42,26,150,9
+    LTEXT           "ZoomIt Custom",IDC_VERSION,42,8,223,10
+    LTEXT           "Screen magnification and annotation",IDC_STATIC,42,23,223,10
     ICON            "APPICON",IDC_STATIC,12,9,20,20
     CONTROL         "Show tray icon",IDC_SHOW_TRAY_ICON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,295,105,10
     CONTROL         "",IDC_TAB,"SysTabControl32",TCS_MULTILINE | WS_TABSTOP,8,46,265,245
@@ -248,6 +246,28 @@ END
 
 
 
+ABOUT DIALOGEX 0, 0, 260, 228
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    ICON            "APPICON",IDC_STATIC,9,9,24,24
+    LTEXT           "ZoomIt Custom",IDC_ABOUT_TITLE,42,10,211,12
+    LTEXT           FILE_VERSION_STRING,IDC_ABOUT_VERSION,42,25,211,10
+    LTEXT           "Screen magnification, drawing, LiveZoom and screen snips.",IDC_STATIC,7,46,246,18
+    GROUPBOX        "Custom edition",IDC_STATIC,7,71,246,45
+    LTEXT           "(C) 2026 Prof. ing. Raffaele Mele",IDC_ABOUT_COPYRIGHT,15,85,230,10
+    CONTROL         "<a HREF=""https://github.com/lellomele/ZoomItCustom"">GitHub: lellomele/ZoomItCustom</a>",IDC_ABOUT_REPOSITORY,
+                    "SysLink",WS_TABSTOP,15,100,230,10
+    GROUPBOX        "Original software",IDC_STATIC,7,124,246,49
+    LTEXT           "ZoomIt by Mark Russinovich",IDC_STATIC,15,138,230,10
+    LTEXT           "Copyright (C) Mark Russinovich / Microsoft Corporation.",IDC_ABOUT_UPSTREAM,15,151,230,17
+    GROUPBOX        "License",IDC_STATIC,7,181,246,40
+    LTEXT           "MIT license. Original copyright notices are preserved.",IDC_STATIC,15,194,230,10
+    CONTROL         "<a HREF=""https://github.com/lellomele/ZoomItCustom/blob/main/LICENSE"">License</a>    <a HREF=""https://github.com/microsoft/PowerToys/tree/21fd5092b3e062ca6c8dd6b8c772a236f90b3b42/src/modules/ZoomIt/ZoomIt"">Original source</a>",IDC_ABOUT_LICENSE,
+                    "SysLink",WS_TABSTOP,15,208,230,10
+END
+
+
 /////////////////////////////////////////////////////////////////////////////
 //
 // DESIGNINFO
@@ -311,6 +331,14 @@ BEGIN
         BOTTOMMARGIN, 61
     END
 
+    "ABOUT", DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 253
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 221
+    END
+
 END
 #endif    // APSTUDIO_INVOKED
 
@@ -362,6 +390,11 @@ BEGIN
 END
 
 BREAK AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+ABOUT AFX_DIALOG_LAYOUT
 BEGIN
     0
 END

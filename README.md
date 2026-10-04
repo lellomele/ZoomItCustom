@@ -34,7 +34,7 @@ La cronologia del disegno conserva fino a 32 immagini, con un budget indicativo 
 
 Il percorso LiveZoom per Windows Server 2022 e Windows 11 21H2 prima della revisione 829 richiede privilegi UIAccess. In questa distribuzione portatile tali privilegi non sono disponibili: LiveZoom viene disabilitato su queste build e le opzioni mostrano un avviso. Usare una versione aggiornata di Windows 10/11. Il requisito è documentato da [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/magnification/nf-magnification-magsetinputtransform).
 
-Il corretto funzionamento con più monitor a DPI differenti, desktop remoto, touch e penna non è garantito.
+Quando cambia la configurazione degli schermi, la modalità attiva viene chiusa e il programma resta disponibile. In modalità Duplica, gli schermi condividono un unico desktop; il timer usa un secondo desktop solo se già disponibile. Il corretto funzionamento con più monitor a DPI differenti, desktop remoto, touch e penna non è garantito.
 
 ## Compilazione
 
@@ -52,10 +52,10 @@ Per eseguire anche le prove sul desktop:
 
 Queste prove mostrano temporaneamente zoom e finestre dell'applicazione.
 
-L'icona è integrata nell'eseguibile e nelle finestre. I sorgenti grafici e le dimensioni di distribuzione sono in assets; generate-icon.ps1 rigenera PNG e ICO.
+La scheda About, dopo Snip, riporta versione, autore, origine e licenza. L'icona è integrata nell'eseguibile e nelle finestre. I sorgenti grafici e le dimensioni di distribuzione sono in assets; generate-icon.ps1 rigenera PNG e ICO.
 
 ## Origine e copyright
 
 Derivato dai sorgenti Microsoft PowerToys che integrano ZoomIt 9.0, commit [21fd5092b3e062ca6c8dd6b8c772a236f90b3b42](https://github.com/microsoft/PowerToys/tree/21fd5092b3e062ca6c8dd6b8c772a236f90b3b42/src/modules/ZoomIt/ZoomIt). Questa versione non è una ricompilazione dei sorgenti originali di ZoomIt 6.12.
 
-Copyright Mark Russinovich / Microsoft Corporation. Licenza MIT: vedere LICENSE. Per redistribuire i sorgenti o l'eseguibile derivato, conservare la licenza e gli avvisi di copyright. L'eseguibile originale Sysinternals 6.12 non è incluso nei pacchetti.
+Modifiche della versione Custom: copyright (C) 2026 Prof. ing. Raffaele Mele. Codice originale: copyright Mark Russinovich / Microsoft Corporation. Licenza MIT: vedere LICENSE. Per redistribuire i sorgenti o l'eseguibile derivato, conservare la licenza e gli avvisi di copyright. L'eseguibile originale Sysinternals 6.12 non è incluso nei pacchetti.

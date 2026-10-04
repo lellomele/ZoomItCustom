@@ -95,3 +95,10 @@
 #endif
 
 #define IDC_LIVE_STATUS 4200
+
+#define IDC_ABOUT_TITLE                 4210
+#define IDC_ABOUT_VERSION               4211
+#define IDC_ABOUT_COPYRIGHT             4212
+#define IDC_ABOUT_UPSTREAM              4213
+#define IDC_ABOUT_REPOSITORY            4214
+#define IDC_ABOUT_LICENSE               4215

@@ -6,6 +6,8 @@
 void require(bool condition, const char* message) {
     if(!condition) throw std::runtime_error(message);
 }
+#include "utility_geometry.h"
+
 void pump(DWORD milliseconds) {
     const auto end=GetTickCount64()+milliseconds;
     MSG msg{};
@@ -22,12 +24,39 @@ size_t privateBytes() {
     GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),sizeof(counters));
     return counters.PrivateUsage;
 }
+DWORD fakeStickyFlags=SKF_HOTKEYACTIVE|SKF_CONFIRMHOTKEY|SKF_AUDIBLEFEEDBACK;
+unsigned fakeStickyWrites=0;
+bool fakeStickyFailure=false;
+BOOL WINAPI FakeSticky(UINT action,UINT,void* data,UINT) {
+    auto* settings=static_cast<STICKYKEYS*>(data);
+    if(action==SPI_GETSTICKYKEYS) {settings->dwFlags=fakeStickyFlags; return TRUE;}
+    if(fakeStickyFailure) return FALSE;
+    ++fakeStickyWrites; fakeStickyFlags=settings->dwFlags; return TRUE;
+}
+EXECUTION_STATE fakeExecution=ES_CONTINUOUS;
+unsigned fakeExecutionWrites=0;
+EXECUTION_STATE WINAPI FakeExecution(EXECUTION_STATE state) {
+    ++fakeExecutionWrites; const auto previous=fakeExecution; fakeExecution=state; return previous;
+}
+BOOL WINAPI MissingMonitor(HMONITOR,LPMONITORINFO) {return FALSE;}
+HMONITOR WINAPI StaleMonitor(POINT,DWORD) {return reinterpret_cast<HMONITOR>(1);}
+bool nestedSnipHotkeys=false;
+bool nestedDisplayChange=false;
+
 bool cancelSnip = false;
 void CALLBACK SelectTestRegion(HWND, UINT, UINT_PTR timer, DWORD) {
     HWND selection = FindWindow(L"ZoomitSelectRectangle",nullptr);
     DWORD owner{};
     if (!selection || !GetWindowThreadProcessId(selection,&owner) || owner!=GetCurrentProcessId()) return;
     KillTimer(nullptr,timer);
+    if(nestedSnipHotkeys) {
+        const HWND original=g_hWndLiveZoom;
+        SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0);
+        SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
+        require(g_SelectionActive && g_hWndLiveZoom==original,"Nested selection hotkeys must be ignored");
+        nestedSnipHotkeys=false;
+    }
+    if(nestedDisplayChange) {SendMessage(g_hWndMain,WM_DISPLAYCHANGE,32,MAKELPARAM(1920,1080)); nestedDisplayChange=false;}
     if (cancelSnip) SendMessage(selection,WM_KEYDOWN,VK_ESCAPE,0);
     else {
         SendMessage(selection,WM_LBUTTONDOWN,0,MAKELPARAM(20,20));
@@ -37,16 +66,49 @@ void CALLBACK SelectTestRegion(HWND, UINT, UINT_PTR timer, DWORD) {
 }
 
 bool optionsValid = true;
+bool aboutCaptured=false;
+bool optionsDisplayChange=false;
+bool optionsSaveHotkey=false;
+const wchar_t* aboutCapturePath=nullptr;
 INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_TIMER && wParam == 97) {
         KillTimer(dialog, 97);
-        SendMessage(dialog, WM_COMMAND, IDCANCEL, 0);
+        if(!aboutCaptured && aboutCapturePath) {
+            HWND tabs=GetDlgItem(dialog,IDC_TAB);
+            TabCtrl_SetCurSel(tabs,ABOUT_PAGE);
+            NMHDR notification{tabs,IDC_TAB,TCN_SELCHANGE};
+            SendMessage(dialog,WM_NOTIFY,IDC_TAB,reinterpret_cast<LPARAM>(&notification));
+            RedrawWindow(dialog,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+            optionsValid &= IsWindowVisible(g_OptionsTabs[ABOUT_PAGE].hPage) != FALSE;
+            RECT window{};GetWindowRect(dialog,&window);
+            HDC screen=GetDC(nullptr), memory=CreateCompatibleDC(screen);
+            HBITMAP image=CreateCompatibleBitmap(screen,window.right-window.left,window.bottom-window.top);
+            SelectObject(memory,image);
+            PrintWindow(dialog,memory,PW_RENDERFULLCONTENT);
+            SavePng(const_cast<wchar_t*>(aboutCapturePath),image);
+            DeleteDC(memory);DeleteObject(image);ReleaseDC(nullptr,screen);
+            aboutCaptured=true;
+        }
+        if (optionsDisplayChange) {
+            SendMessage(g_hWndMain,WM_DISPLAYCHANGE,32,MAKELPARAM(1920,1080)); pump(25);
+            optionsValid &= IsWindowVisible(g_hWndMain) && g_DisplayWake.active();
+            optionsDisplayChange=false;
+        }
+        if (optionsSaveHotkey) {
+            SendMessage(GetDlgItem(g_OptionsTabs[LIVE_PAGE].hPage,IDC_LIVE_HOTKEY),HKM_SETHOTKEY,
+                        ((HOTKEYF_CONTROL|HOTKEYF_ALT)<<8)|VK_F24,0);
+            SendMessage(dialog,WM_COMMAND,IDOK,0); optionsSaveHotkey=false;
+        } else SendMessage(dialog, WM_COMMAND, IDCANCEL, 0);
         return TRUE;
     }
     auto result = OptionsProc(dialog, message, wParam, lParam);
     if (message == WM_INITDIALOG) {
-        optionsValid &= TabCtrl_GetItemCount(GetDlgItem(dialog, IDC_TAB)) == 5;
+        optionsValid &= TabCtrl_GetItemCount(GetDlgItem(dialog, IDC_TAB)) == 6;
         for (auto& page : g_OptionsTabs) optionsValid &= IsWindow(page.hPage) != FALSE;
+        wchar_t copyright[256]{}, version[64]{};
+        GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
+        GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
+        optionsValid &= wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr && wcsstr(version,L"1.2.0.0")!=nullptr;
         SetTimer(dialog, 97, 35, nullptr);
     }
     return result;
@@ -54,8 +116,35 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
 
 int main(int argc, char** argv) {
     const bool snipOnly = argc>1 && strcmp(argv[1],"--snip-only")==0;
+    std::wstring capturePath;
+    if(argc>2) {capturePath=std::filesystem::absolute(argv[2]).wstring();aboutCapturePath=capturePath.c_str();}
     POINT oldCursor{}; GetCursorPos(&oldCursor);
     try {
+        RunUtilityGeometryTests();
+        {
+            const DWORD original=fakeStickyFlags;
+            zoomit::StickyKeysGuard sticky(FakeSticky);
+            sticky.SuppressShortcut(); sticky.SuppressShortcut();
+            require(fakeStickyWrites==1 && fakeStickyFlags==SKF_AUDIBLEFEEDBACK,"StickyKeys suppression must preserve flags and snapshot once");
+            fakeStickyFailure=true; sticky.Restore(); fakeStickyFailure=false; sticky.Restore();
+            require(fakeStickyFlags==original && fakeStickyWrites==2,"Failed StickyKeys restore must be retried");
+            fakeStickyFlags=SKF_STICKYKEYSON|original; sticky.SuppressShortcut();
+            require(fakeStickyFlags==(SKF_STICKYKEYSON|original),"Active accessibility settings must be preserved");
+            zoomit::DisplayWakeGuard wake(FakeExecution);
+            wake.SuppressSleep(); wake.SuppressSleep();
+            require(fakeExecutionWrites==1 && (fakeExecution&ES_DISPLAY_REQUIRED),"Sleep suppression must be per session");
+            wake.Restore(); require(fakeExecution==ES_CONTINUOUS && fakeExecutionWrites==2,"Power state must be restored without changing preferences");
+            wchar_t error[32]{};
+            FormatErrorText(error,_countof(error),nullptr,0xEFFFFFFF);
+            require(wcsstr(error,L"Windows error")!=nullptr && error[31]==0,"Unknown error must format safely");
+            FormatErrorText(error,_countof(error),std::wstring(4096,L'x').c_str(),ERROR_FILE_NOT_FOUND);
+            require(error[31]==0,"Long error descriptions must be truncated safely");
+            zoomit::DisplayTopology mirror{}; mirror.valid=true; mirror.count=2; mirror.desktop={0,0,1920,1080};
+            mirror.paths[0].source=0; mirror.paths[0].target=0; mirror.paths[1].source=0; mirror.paths[1].target=1;
+            require(mirror.mirrored(),"Duplicate outputs must share one logical display");
+            auto extended=mirror; extended.paths[1].source=1;
+            require(!extended.mirrored() && !(mirror==extended),"Extended and duplicated desktops must be distinguished");
+        }
         require(g_ToggleKey==((HOTKEYF_CONTROL<<8)|'1') &&
                 g_LiveZoomToggleKey==((HOTKEYF_CONTROL<<8)|'2') &&
                 g_DrawToggleKey==((HOTKEYF_CONTROL<<8)|'3') &&
@@ -185,6 +274,40 @@ int main(int argc, char** argv) {
         ShowWindow(host,SW_SHOW);
         SetForegroundWindow(host);
         SetCursorPos(125,125);
+        {
+            const auto errors=g_TestErrorCount;
+            g_TestFailZoomAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,0); pump(5);
+            require(!IsWindowVisible(g_hWndMain),"Drawing must abort when capture allocation fails");
+            g_TestFailZoomAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0); pump(5);
+            require(!IsWindowVisible(g_hWndMain) && !g_SelectionActive,"Snip must not start after allocation failure");
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(100);
+            g_TestFailZoomAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,LIVE_DRAW_HOTKEY,0); pump(5);
+            require(IsWindowVisible(g_hWndLiveZoom) && !(GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED),"Failed LiveDraw must restore existing LiveZoom");
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(5);
+            require(g_TestErrorCount==errors+3,"Allocation failures must be reported exactly once");
+            const auto initialize=pMagInitialize; pMagInitialize=nullptr;
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_DRAW_HOTKEY,0);
+            require(!IsWindow(g_hWndLiveZoom) && !IsWindowVisible(g_hWndMain),"Missing Magnification must fail safely");
+            pMagInitialize=initialize;
+            const auto monitorApi=pMonitorFromPoint; const auto infoApi=pGetMonitorInfo;
+            pMonitorFromPoint=StaleMonitor; pGetMonitorInfo=MissingMonitor;
+            MONITORINFO fallback{}; require(UpdateMonitorInfo({0,0},&fallback) && fallback.cbSize==sizeof(fallback),"Disconnected monitor handles need a usable fallback");
+            pMonitorFromPoint=monitorApi; pGetMonitorInfo=infoApi;
+        }
+        {
+            const auto errors=g_TestErrorCount;
+            g_TestFailCapture=true; SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,0); pump(5);
+            require(!IsWindowVisible(g_hWndMain),"Failed screen copy must abort zoom without leaving an overlay");
+            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(30);
+            const auto objects=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+            g_TestFailCapture=true; SendMessage(g_hWndMain,WM_COMMAND,IDC_COPY,SHALLOW_ZOOM);
+            require(!g_TestSnipBitmap && IsWindowVisible(g_hWndMain),"Failed Snip copy must not publish an uncaptured image");
+            g_TestFailCapture=true; SendMessage(g_hWndMain,WM_COMMAND,IDC_SAVE,SHALLOW_ZOOM);
+            require(!g_bSaveInProgress && GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)==objects,"Failed save capture must release graphics resources");
+            require(g_TestErrorCount==errors+3,"Copy failures must be reported once per operation");
+            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(5);
+        }
         size_t drawCycleCount=0;
         auto runCycle=[&](bool fullscreen, bool liveDraw=false, bool exitWithLiveHotkey=false) {
             ++drawCycleCount;
@@ -266,6 +389,7 @@ int main(int argc, char** argv) {
             auto snipGdi = GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
             for(int i=0;i<6;++i) {
                 cancelSnip=false;
+                nestedSnipHotkeys=true;
                 SetTimer(nullptr,0,15,SelectTestRegion);
                 SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0);
                 BITMAP cropped{};
@@ -303,6 +427,40 @@ int main(int argc, char** argv) {
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(30);
             pointerVisible();
         }
+        size_t displayChangeCases=0;
+        for(int mode=0;mode<4;++mode) {
+            g_AnimateZoom=FALSE;
+            if(mode==0) SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
+            else if(mode==1) SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
+            else if(mode==2) {SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);pump(100);SendMessage(g_hWndMain,WM_HOTKEY,LIVE_DRAW_HOTKEY,0);}
+            else SendMessage(g_hWndMain,WM_COMMAND,IDC_BREAK,0);
+            pump(100);
+            SendMessage(g_hWndMain,WM_DISPLAYCHANGE,32,MAKELPARAM(1920,1080)); pump(120);
+            require(IsWindow(g_hWndMain) && !IsWindowVisible(g_hWndMain) && !IsWindow(g_hWndLiveZoom),"Display changes must stop capture while keeping the app alive");
+            pointerVisible(); ++displayChangeCases;
+            SendMessage(g_hWndMain,WM_USER_END_SESSION,0,0); pump(5);
+            require(!IsWindowVisible(g_hWndMain),"Stale exit messages must not reactivate zoom");
+            SetForegroundWindow(host);
+        }
+        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(100);
+        nestedDisplayChange=true; cancelSnip=false; SetTimer(nullptr,0,15,SelectTestRegion);
+        SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0); pump(150);
+        if(g_TestSnipBitmap){DeleteObject(g_TestSnipBitmap);g_TestSnipBitmap=nullptr;}
+        require(IsWindow(g_hWndMain) && !IsWindowVisible(g_hWndMain),"Display reset must defer safely until Snip finishes");
+        pointerVisible(); ++displayChangeCases;
+        g_BreakOnSecondary=false; g_BreakShowBackgroundFile=false;
+        SendMessage(g_hWndMain,WM_COMMAND,IDC_BREAK,0); pump(30);
+        require(g_DisplayWake.active() && SuppressIdleCommand(SC_SCREENSAVE) &&
+            SuppressIdleCommand(SC_MONITORPOWER) && !SuppressIdleCommand(SC_CLOSE),"Timer must suppress idle display commands without changing preferences");
+        optionsDisplayChange=true;
+        DialogBox(g_hInstance,L"OPTIONS",g_hWndMain,TestOptionsProc); pump(150);
+        require(!IsWindowVisible(g_hWndMain) && !g_DisplayWake.active(),"Display changes during Options must release the timer and its wake lock after closing Options");
+        pointerVisible(); ++displayChangeCases;
+        optionsSaveHotkey=true;
+        DialogBox(g_hInstance,L"OPTIONS",g_hWndMain,TestOptionsProc);
+        require(g_LiveZoomToggleMod==(MOD_CONTROL|MOD_ALT),"Saving LiveZoom options must update both key and modifiers");
+        UnregisterAllHotkeys(g_hWndMain);g_LiveZoomToggleKey=0;
+        const auto topology=zoomit::ReadDisplayTopology();
         if(!snipOnly) {runCycle(false); runCycle(true); runCycle(false,true); runCycle(true,true);
             runCycle(false,true,true); runCycle(true,true,true);}
         DialogBox(g_hInstance,L"OPTIONS",g_hWndMain,TestOptionsProc);
@@ -320,7 +478,7 @@ int main(int argc, char** argv) {
             SendMessage(g_hWndMain,WM_COMMAND,IDC_BREAK,0); pump(10);
             SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,0); pump(10);
         }
-        require(optionsValid,"Options must have five pages with no recording or typing pages");
+        require(optionsValid,"Options must have six pages with About last and no recording or typing pages");
         const auto gdiAfter=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
         const auto userAfter=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);
         const auto memoryAfter=privateBytes();
@@ -338,7 +496,8 @@ int main(int argc, char** argv) {
           <<",\"live_toggle_events\":"<<liveToggleCount<<",\"effect_operations\":1200,\"effects_milliseconds\":"<<effectsMilliseconds
           <<",\"effect_gdi_before\":"<<effectsBefore<<",\"effect_gdi_after\":"<<effectsAfter
           <<",\"effect_private_before\":"<<effectMemoryBefore<<",\"effect_private_after\":"<<effectMemoryAfter
-          <<",\"snip_cases\":19,\"options_open_close_cycles\":"<<(snipOnly?1:13)<<",\"timer_cycles\":"<<(snipOnly?1:13)
+          <<",\"display_change_cases\":"<<displayChangeCases<<",\"active_display_paths\":"<<topology.count
+          <<",\"mirrored_desktop\":"<<(topology.mirrored()?"true":"false")<<",\"allocation_failure_cases\":3,\"capture_failure_cases\":3,\"snip_cases\":20,\"options_open_close_cycles\":"<<(snipOnly?3:15)<<",\"timer_cycles\":"<<(snipOnly?2:14)
           <<",\"gdi_before\":"<<gdiBaseline<<",\"gdi_after\":"<<gdiAfter
           <<",\"user_before\":"<<userBaseline<<",\"user_after\":"<<userAfter
           <<",\"private_bytes_before\":"<<memoryBefore<<",\"private_bytes_after\":"<<memoryAfter<<"}\n";

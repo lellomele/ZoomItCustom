@@ -15,6 +15,10 @@
 #include "Utility.h"
 #include "WindowsVersions.h"
 #include "ZoomItSettings.h"
+#include "About.h"
+#include "SessionGuards.h"
+#include "DisplayTopology.h"
+#include <dbt.h>
 
 
 HINSTANCE		g_hInstance;
@@ -36,6 +40,7 @@ COLORREF	g_CustomColors[16];
 
 #define BREAK_PAGE	  3
 #define SNIP_PAGE	  4
+#define ABOUT_PAGE 5
 
 OPTION_TABS g_OptionsTabs[] = {
     { _T("Zoom"), NULL },
@@ -44,7 +49,8 @@ OPTION_TABS g_OptionsTabs[] = {
 
 
     { _T("Break"), NULL },
-    { _T("Snip"), NULL }
+    { _T("Snip"), NULL },
+    { _T("About"), NULL }
 };
 
 float g_ZoomLevels[] = {
@@ -97,8 +103,24 @@ bool g_TestMode = false;
 HBITMAP g_TestSnipBitmap = nullptr;
 const wchar_t* g_TestSavePath = nullptr;
 DWORD g_TestSaveFilter = 1;
+bool g_TestFailZoomAllocation = false;
+bool g_TestFailCapture = false;
+unsigned g_TestErrorCount = 0;
 #endif
 
+int ShowAppMessage(HWND owner, const wchar_t* text, const wchar_t* title, UINT flags) {
+#ifdef ZOOMIT_TESTING
+    if (g_TestMode) { ++g_TestErrorCount; return IDOK; }
+#endif
+    return MessageBoxW(owner, text, title, flags);
+}
+BOOL CaptureImagePixels(HDC target, int x, int y, int width, int height, HDC source,
+                        int sourceX, int sourceY, int sourceWidth, int sourceHeight, DWORD operation) {
+#ifdef ZOOMIT_TESTING
+    if (g_TestFailCapture) { g_TestFailCapture = false; SetLastError(ERROR_GEN_FAILURE); return FALSE; }
+#endif
+    return StretchBlt(target,x,y,width,height,source,sourceX,sourceY,sourceWidth,sourceHeight,operation);
+}
 void PersistSettings();
 
 bool MigrateHotkeys() noexcept {
@@ -272,17 +294,18 @@ void RestoreForeground()
 // ErrorDialog
 //
 //----------------------------------------------------------------------------
-VOID ErrorDialog( HWND hParent, PCTSTR message, DWORD _Error )
-{
-    LPTSTR	lpMsgBuf;
-    TCHAR	errmsg[1024];
-
-    FormatMessage( FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
-                    NULL, _Error, 
-                    MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                    reinterpret_cast<LPTSTR>(&lpMsgBuf), 0, NULL );
-    _stprintf( errmsg, L"%s: %s", message, lpMsgBuf );
-    MessageBox( hParent, errmsg, APPNAME, MB_OK|MB_ICONERROR);
+void FormatErrorText(wchar_t* output, size_t characters, PCTSTR message, DWORD error) noexcept {
+    wchar_t system[768]{};
+    if (!FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error,
+                        0, system, _countof(system), nullptr))
+        _snwprintf_s(system, _countof(system), _TRUNCATE, L"Windows error %lu", error);
+    if (output && characters)
+        _snwprintf_s(output, characters, _TRUNCATE, L"%s: %s", message ? message : L"Error", system);
+}
+VOID ErrorDialog(HWND owner, PCTSTR message, DWORD error) {
+    wchar_t text[1024]{};
+    FormatErrorText(text, _countof(text), message, error);
+    ShowAppMessage(owner, text, APPNAME, MB_OK | MB_ICONERROR);
 }
 
 //----------------------------------------------------------------------------
@@ -299,7 +322,7 @@ VOID ErrorDialogString( HWND hParent, PCTSTR Message, const wchar_t *_Error )
     {
         EnsureForeground();
     }
-    MessageBox(hParent, errmsg, APPNAME, MB_OK | MB_ICONERROR);
+    ShowAppMessage(hParent, errmsg, APPNAME, MB_OK | MB_ICONERROR);
     if( hParent == g_hWndMain )
     {
         RestoreForeground();
@@ -342,6 +365,9 @@ void SetAutostartFilePath()
 //--------------------------------------------------------------------
 bool ConfigureAutostart( HWND hParent, bool Enable ) 
 {
+#ifdef ZOOMIT_TESTING
+    if (g_TestMode) return true;
+#endif
     HKEY hRunKey, hZoomit;
     DWORD error, length, type;
     TCHAR imageFile[MAX_PATH];
@@ -546,10 +572,8 @@ Run64bitVersion(
 //----------------------------------------------------------------------------
 BOOLEAN IsPresentationMode()
 {
-    QUERY_USER_NOTIFICATION_STATE pUserState;
-
-    pSHQueryUserNotificationState( &pUserState );
-    return pUserState == QUNS_PRESENTATION_MODE;
+    QUERY_USER_NOTIFICATION_STATE state{};
+    return pSHQueryUserNotificationState && SUCCEEDED(pSHQueryUserNotificationState(&state)) && state == QUNS_PRESENTATION_MODE;
 }
 
 //----------------------------------------------------------------------------
@@ -560,83 +584,6 @@ BOOLEAN IsPresentationMode()
 // break timer. 
 //
 //----------------------------------------------------------------------------
-LONG EnableDisableSecondaryDisplay( HWND hWnd, BOOLEAN Enable, 
-                                    PDEVMODE OriginalDevMode ) 
-{
-    LONG		result;
-    DEVMODE		devMode{};
-
-    if( Enable ) {
-
-        //
-        // Prepare the position of Display 2 to be right to the right of Display 1
-        //
-        devMode.dmSize = sizeof(devMode);
-        devMode.dmDriverExtra = 0;
-        EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &devMode); 
-        *OriginalDevMode = devMode;
-
-        //
-        // Enable display 2 in the registry
-        //
-        devMode.dmPosition.x = devMode.dmPelsWidth;
-        devMode.dmFields = DM_POSITION |
-                            DM_DISPLAYORIENTATION |
-                            DM_BITSPERPEL |
-                            DM_PELSWIDTH |
-                            DM_PELSHEIGHT |
-                            DM_DISPLAYFLAGS |
-                            DM_DISPLAYFREQUENCY; 
-        result = ChangeDisplaySettingsEx( L"\\\\.\\DISPLAY2",
-                                          &devMode,
-                                          NULL,
-                                          CDS_NORESET | CDS_UPDATEREGISTRY,
-                                          NULL);
-
-    } else {
-
-        OriginalDevMode->dmFields = DM_POSITION |
-                            DM_DISPLAYORIENTATION |
-                            DM_BITSPERPEL |
-                            DM_PELSWIDTH |
-                            DM_PELSHEIGHT |
-                            DM_DISPLAYFLAGS |
-                            DM_DISPLAYFREQUENCY;
-        result = ChangeDisplaySettingsEx( L"\\\\.\\DISPLAY2",
-                                          OriginalDevMode,
-                                          NULL,
-                                          CDS_NORESET | CDS_UPDATEREGISTRY,
-                                          NULL);
-    }
-
-    //
-    // Update the hardware
-    //
-    if( result == DISP_CHANGE_SUCCESSFUL ) {
-
-        if( !ChangeDisplaySettingsEx(NULL, NULL, NULL, 0, NULL)) {
-
-            result = GetLastError();
-        }
-
-        //
-        // If enabling, move zoomit to the second monitor
-        //
-        if( Enable && result == DISP_CHANGE_SUCCESSFUL ) {
-
-            SetWindowPos(FindWindowW(L"ZoomItCustomClass", NULL),
-                     NULL,
-                     devMode.dmPosition.x,
-                     0,
-                     0,
-                     0,
-                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-            SetCursorPos( devMode.dmPosition.x+1, devMode.dmPosition.y+1 );
-        }
-    }
-    return result;
-}
-
 //----------------------------------------------------------------------------
 //
 // GetLineBounds
@@ -764,42 +711,30 @@ COLORREF BlendColors(COLORREF color1, const Gdiplus::Color& color2) {
 // black.
 //
 //----------------------------------------------------------------------------
-HBITMAP CreateFadedDesktopBackground( HDC hdc, LPRECT rcScreen, LPRECT rcCrop )
+HBITMAP CreateFadedDesktopBackground(HDC screen, LPRECT rect, LPRECT crop)
 {
-    // create bitmap
-    int		width		= rcScreen->right - rcScreen->left;
-    int		height		= rcScreen->bottom - rcScreen->top;
-    HDC		hdcScreen	= hdc;
-    HDC		hdcMem		= CreateCompatibleDC( hdcScreen );
-    HBITMAP	hBitmap		= CreateCompatibleBitmap( hdcScreen, width, height );
-    HBITMAP	hOld		= static_cast<HBITMAP>(SelectObject( hdcMem, hBitmap ));
-    HBRUSH	hBrush		= CreateSolidBrush(RGB(0, 0, 0));
-    
-    // start with black background
-    FillRect( hdcMem, rcScreen, hBrush );
-    if(rcCrop != NULL && rcCrop->left != -1 ) {
-
-        // copy screen contents that are not cropped
-        BitBlt(hdcMem, rcCrop->left, rcCrop->top, rcCrop->right - rcCrop->left,
-            rcCrop->bottom - rcCrop->top, hdcScreen, rcCrop->left, rcCrop->top, SRCCOPY);
+    if (!screen || !rect || rect->right<=rect->left || rect->bottom<=rect->top) return nullptr;
+    const int width=rect->right-rect->left, height=rect->bottom-rect->top;
+    HDC memory=CreateCompatibleDC(screen);
+    HBITMAP bitmap=CreateCompatibleBitmap(screen,width,height);
+    HBRUSH brush=CreateSolidBrush(RGB(0,0,0));
+    if(!memory || !bitmap || !brush) {
+        DeleteDC(memory); DeleteObject(bitmap); DeleteObject(brush); return nullptr;
     }
-
-    // blend screen contents into it
-    BLENDFUNCTION	blend = { 0 };
-    blend.BlendOp				= AC_SRC_OVER;
-    blend.BlendFlags			= 0;
-    blend.SourceConstantAlpha   = 0x4F;
-    blend.AlphaFormat			= 0;
-    AlphaBlend( hdcMem,0, 0, width, height, 
-                hdcScreen, rcScreen->left, rcScreen->top, 
-                width, height, blend );
-
-    SelectObject( hdcMem, hOld );
-    DeleteDC( hdcMem );
-    DeleteObject(hBrush);
-    ReleaseDC( NULL, hdcScreen );
-
-    return hBitmap;
+    const auto previous=SelectObject(memory,bitmap);
+    if(!previous || previous==HGDI_ERROR) {
+        DeleteDC(memory); DeleteObject(bitmap); DeleteObject(brush); return nullptr;
+    }
+    RECT local{0,0,width,height};
+    const bool filled=FillRect(memory,&local,brush)!=FALSE;
+    if(crop && crop->left!=-1)
+        BitBlt(memory,crop->left,crop->top,crop->right-crop->left,crop->bottom-crop->top,
+               screen,rect->left+crop->left,rect->top+crop->top,SRCCOPY);
+    BLENDFUNCTION blend{AC_SRC_OVER,0,0x4F,0};
+    const bool blended=AlphaBlend(memory,0,0,width,height,screen,rect->left,rect->top,width,height,blend)!=FALSE;
+    SelectObject(memory,previous); DeleteDC(memory); DeleteObject(brush);
+    if(!filled || !blended) {DeleteObject(bitmap);return nullptr;}
+    return bitmap;
 }
 
 //----------------------------------------------------------------------------
@@ -872,7 +807,7 @@ using namespace Gdiplus;
 
    ImageCodecInfo* pImageCodecInfo = NULL;
 
-   GetImageEncodersSize(&num, &size);
+   if (GetImageEncodersSize(&num, &size) != Ok) return -1;
    if(size == 0)
       return -1;  // Failure
 
@@ -880,11 +815,11 @@ using namespace Gdiplus;
    if(pImageCodecInfo == NULL)
       return -1;  // Failure
 
-   GetImageEncoders(num, size, pImageCodecInfo);
+   if (GetImageEncoders(num, size, pImageCodecInfo) != Ok) { free(pImageCodecInfo); return -1; }
 
    for(UINT j = 0; j < num; ++j)
    {
-      if( wcscmp(pImageCodecInfo[j].MimeType, format) == 0 )
+      if(pImageCodecInfo[j].MimeType && wcscmp(pImageCodecInfo[j].MimeType, format) == 0)
       {
          *pClsid = pImageCodecInfo[j].Clsid;
          free(pImageCodecInfo);
@@ -1001,51 +936,18 @@ void EnableDisableOpacity( HWND hWnd, BOOLEAN Enable )
 // EnableDisableScreenSaver
 //
 //----------------------------------------------------------------------------
-void EnableDisableScreenSaver( BOOLEAN Enable ) 
-{
-    SystemParametersInfo(SPI_SETSCREENSAVEACTIVE,Enable,0,0); 
-    SystemParametersInfo(SPI_SETPOWEROFFACTIVE,Enable,0,0); 
-    SystemParametersInfo(SPI_SETLOWPOWERACTIVE,Enable,0,0); 
+zoomit::DisplayWakeGuard g_DisplayWake;
+zoomit::StickyKeysGuard g_StickyKeys;
+bool SuppressIdleCommand(WPARAM command) noexcept {
+    const auto action = command & 0xfff0;
+    return g_DisplayWake.active() && (action == SC_SCREENSAVE || action == SC_MONITORPOWER);
 }
-
-//----------------------------------------------------------------------------
-//
-// EnableDisableStickyKeys
-//
-//----------------------------------------------------------------------------
-void EnableDisableStickyKeys( BOOLEAN Enable )
-{
-    static STICKYKEYS	prevStickyKeyValue = {0};
-    STICKYKEYS			newStickyKeyValue = {0};
-
-    // Need to do this on Vista tablet to stop sticky key popup when you 
-    // hold down the shift key and draw with the pen.
-    if( Enable ) {
-
-        if( prevStickyKeyValue.cbSize == sizeof(STICKYKEYS)) {
-
-            SystemParametersInfo(SPI_SETSTICKYKEYS, 
-                    sizeof(STICKYKEYS), &prevStickyKeyValue, SPIF_SENDCHANGE);
-        }
-
-    } else {
-
-        prevStickyKeyValue.cbSize = sizeof(STICKYKEYS);
-        if (SystemParametersInfo(SPI_GETSTICKYKEYS, sizeof(STICKYKEYS), 
-                &prevStickyKeyValue, 0)) {
-
-            newStickyKeyValue.cbSize = sizeof(STICKYKEYS);
-            newStickyKeyValue.dwFlags = 0;
-            if( !SystemParametersInfo(SPI_SETSTICKYKEYS, 
-                sizeof(STICKYKEYS), &newStickyKeyValue, SPIF_SENDCHANGE)) {
-
-                // DWORD error = GetLastError();
-
-            }
-        }
-    }
+void EnableDisableScreenSaver(BOOLEAN enable) {
+    if (enable) g_DisplayWake.Restore(); else g_DisplayWake.SuppressSleep();
 }
-
+void EnableDisableStickyKeys(BOOLEAN enable) {
+    if (enable) g_StickyKeys.Restore(); else g_StickyKeys.SuppressShortcut();
+}
 
 //----------------------------------------------------------------------------
 //
@@ -1078,6 +980,9 @@ INT_PTR CALLBACK AdvancedBreakProc( HWND hDlg, UINT message, WPARAM wParam, LPAR
     OPENFILENAME	openFileName;
 
     switch ( message )  {
+    case WM_SYSCOMMAND:
+        if (SuppressIdleCommand(wParam)) return TRUE;
+        break;
     case WM_INITDIALOG:
         if( pSHAutoComplete ) {
             pSHAutoComplete( GetDlgItem( hDlg, IDC_SOUND_FILE), SHACF_FILESYSTEM );
@@ -1252,7 +1157,7 @@ INT_PTR CALLBACK AdvancedBreakProc( HWND hDlg, UINT message, WPARAM wParam, LPAR
 #endif
             if( g_BreakPlaySoundFile && GetFileAttributes( newSoundFile ) == -1 ) {
 
-                MessageBox( hDlg, L"The specified sound file is inaccessible", 
+                ShowAppMessage( hDlg, L"The specified sound file is inaccessible",
                         L"Advanced Break Options Error", MB_ICONERROR );
                 break;
             }
@@ -1263,7 +1168,7 @@ INT_PTR CALLBACK AdvancedBreakProc( HWND hDlg, UINT message, WPARAM wParam, LPAR
 
             if( !g_BreakShowDesktop && g_BreakShowBackgroundFile && GetFileAttributes( newBackgroundFile ) == -1 ) {
 
-                MessageBox( hDlg, L"The specified background file is inaccessible", 
+                ShowAppMessage( hDlg, L"The specified background file is inaccessible",
                         L"Advanced Break Options Error", MB_ICONERROR );
                 break;
             }
@@ -1304,8 +1209,9 @@ INT_PTR CALLBACK AdvancedBreakProc( HWND hDlg, UINT message, WPARAM wParam, LPAR
 
 //----------------------------------------------------------------------------
 //
-INT_PTR CALLBACK OptionsTabProc(HWND dialog, UINT message, WPARAM wParam, LPARAM) {
-    if (message == WM_INITDIALOG) return TRUE;
+INT_PTR CALLBACK OptionsTabProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_INITDIALOG) { zoomit::about::Initialize(dialog); return TRUE; }
+    if (message == WM_NOTIFY && zoomit::about::HandleLink(dialog, lParam)) return TRUE;
     if (message == WM_COMMAND && LOWORD(wParam) == IDC_ADVANCED_BREAK) {
         DialogBox(g_hInstance, L"ADVANCED_BREAK", dialog, AdvancedBreakProc);
         return TRUE;
@@ -1316,7 +1222,7 @@ INT_PTR CALLBACK OptionsTabProc(HWND dialog, UINT message, WPARAM wParam, LPARAM
 // OptionsAddTabs
 //
 //----------------------------------------------------------------------------
-VOID OptionsAddTabs( HWND hOptionsDlg, HWND hTabCtrl ) 
+bool OptionsAddTabs( HWND hOptionsDlg, HWND hTabCtrl )
 {
     int		i;
     TCITEM	tcItem;
@@ -1327,9 +1233,10 @@ VOID OptionsAddTabs( HWND hOptionsDlg, HWND hTabCtrl )
 
         tcItem.mask = TCIF_TEXT;
         tcItem.pszText = g_OptionsTabs[i].TabTitle;
-        TabCtrl_InsertItem( hTabCtrl, i, &tcItem );
+        if (TabCtrl_InsertItem(hTabCtrl, i, &tcItem) == -1) return false;
         g_OptionsTabs[i].hPage = CreateDialog( g_hInstance, g_OptionsTabs[i].TabTitle, 
                     hOptionsDlg, OptionsTabProc );
+        if (!g_OptionsTabs[i].hPage) return false;
     }
     TabCtrl_AdjustRect( hTabCtrl, FALSE, &rc );
     for( i = 0; i < sizeof( g_OptionsTabs )/sizeof(g_OptionsTabs[0]); i++ ) {
@@ -1348,6 +1255,7 @@ VOID OptionsAddTabs( HWND hOptionsDlg, HWND hTabCtrl )
             pEnableThemeDialogTexture( g_OptionsTabs[i].hPage, ETDT_ENABLETAB );
         }
     }
+    return true;
 }
 
 //----------------------------------------------------------------------------
@@ -1459,6 +1367,9 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
     DWORD newToggleKey{}, newTimeout{}, newToggleMod{}, newBreakToggleKey{}, newSnipToggleKey{};
     DWORD newDrawToggleKey{}, newDrawToggleMod{}, newBreakToggleMod{}, newSnipToggleMod{};
     switch ( message )  {
+    case WM_SYSCOMMAND:
+        if (SuppressIdleCommand(wParam)) return TRUE;
+        break;
     case WM_INITDIALOG:
     {
         if( hWndOptions ) {
@@ -1492,13 +1403,14 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
         if (infoSize && GetFileVersionInfo(filePath, 0, infoSize, versionInfo.data())) {
             verString = GetVersionString(reinterpret_cast<VERSION_INFO*>(versionInfo.data()), _T("FileVersion"));
             if (verString) SetDlgItemText(hDlg, IDC_VERSION, (std::wstring(L"ZoomIt Custom ") + verString).c_str());
-            verString = GetVersionString(reinterpret_cast<VERSION_INFO*>(versionInfo.data()), _T("LegalCopyright"));
-            if (verString) SetDlgItemText(hDlg, IDC_COPYRIGHT, verString);
         }
 #endif
         // Add tabs
         hTabCtrl = GetDlgItem( hDlg, IDC_TAB );
-        OptionsAddTabs( hDlg, hTabCtrl );
+        if (!OptionsAddTabs(hDlg,hTabCtrl)) {
+            ShowAppMessage(hDlg,L"Unable to create the options pages.",APPNAME,MB_ICONERROR);
+            hWndOptions=nullptr; EndDialog(hDlg,0); return FALSE;
+        }
 
         InitializeFonts( hDlg, &hFontBold );
         UpdateDrawTabHeaderFont();
@@ -1639,7 +1551,7 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
 
             if( newToggleKey && !RegisterHotKey( GetParent( hDlg ), ZOOM_HOTKEY, newToggleMod, newToggleKey & 0xFF )) {
 
-                MessageBox( hDlg, L"The specified zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
+                ShowAppMessage( hDlg, L"The specified zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
                     APPNAME, MB_ICONERROR );
                 UnregisterAllHotkeys(GetParent( hDlg ));
                 break;
@@ -1648,21 +1560,21 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
                 (!RegisterHotKey( GetParent( hDlg ), LIVE_HOTKEY, newLiveZoomToggleMod, newLiveZoomToggleKey & 0xFF ) ||
                 !RegisterHotKey(GetParent(hDlg), LIVE_DRAW_HOTKEY, (newLiveZoomToggleMod ^ MOD_SHIFT), newLiveZoomToggleKey & 0xFF))) {
 
-                MessageBox( hDlg, L"The specified live-zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
+                ShowAppMessage( hDlg, L"The specified live-zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
                     APPNAME, MB_ICONERROR );
                 UnregisterAllHotkeys(GetParent( hDlg ));
                 break;
 
             } else if( newDrawToggleKey && !RegisterHotKey( GetParent( hDlg ), DRAW_HOTKEY, newDrawToggleMod, newDrawToggleKey & 0xFF )) {
 
-                MessageBox( hDlg, L"The specified draw w/out zoom hotkey is already in use.\nSelect a different draw w/out zoom hotkey.",
+                ShowAppMessage( hDlg, L"The specified draw w/out zoom hotkey is already in use.\nSelect a different draw w/out zoom hotkey.",
                     APPNAME, MB_ICONERROR );
                 UnregisterAllHotkeys(GetParent( hDlg ));
                 break;
 
             } else if( newBreakToggleKey && !RegisterHotKey( GetParent( hDlg ), BREAK_HOTKEY, newBreakToggleMod, newBreakToggleKey & 0xFF )) {
 
-                MessageBox( hDlg, L"The specified break timer hotkey is already in use.\nSelect a different break timer hotkey.",
+                ShowAppMessage( hDlg, L"The specified break timer hotkey is already in use.\nSelect a different break timer hotkey.",
                     APPNAME, MB_ICONERROR );
                 UnregisterAllHotkeys(GetParent( hDlg ));
                 break;
@@ -1672,7 +1584,7 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
                 (!RegisterHotKey(GetParent(hDlg), SNIP_HOTKEY, newSnipToggleMod, newSnipToggleKey & 0xFF) ||
                  !RegisterHotKey(GetParent(hDlg), SNIP_SAVE_HOTKEY, (newSnipToggleMod ^ MOD_SHIFT), newSnipToggleKey & 0xFF))) {
 
-                MessageBox(hDlg, L"The specified snip hotkey is already in use.\nSelect a different snip hotkey.",
+                ShowAppMessage(hDlg, L"The specified snip hotkey is already in use.\nSelect a different snip hotkey.",
                     APPNAME, MB_ICONERROR);
                 UnregisterAllHotkeys(GetParent(hDlg));
                 break;
@@ -1683,6 +1595,7 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
                 g_BreakTimeout = newTimeout;
                 g_ToggleKey = newToggleKey;
                 g_LiveZoomToggleKey = newLiveZoomToggleKey;
+                g_LiveZoomToggleMod = newLiveZoomToggleMod;
                 g_ToggleMod = newToggleMod;
                 g_DrawToggleKey = newDrawToggleKey;
                 g_DrawToggleMod = newDrawToggleMod;
@@ -1763,8 +1676,7 @@ BOOLEAN PopDrawUndo( HDC hDc, P_DRAW_UNDO *DrawUndoList,
     nextUndo = *DrawUndoList;
     if( nextUndo ) {
 
-        BitBlt( hDc, 0, 0, width, height, 
-            nextUndo->hDc, 0, 0, SRCCOPY|CAPTUREBLT );
+        if (!BitBlt(hDc, 0, 0, width, height, nextUndo->hDc, 0, 0, SRCCOPY)) return FALSE;
         *DrawUndoList = nextUndo->Next;
         DeleteDC( nextUndo->hDc );
         DeleteObject( nextUndo->hBitmap );
@@ -2386,6 +2298,7 @@ bool IsPenInverted( WPARAM wParam )
     POINTER_INPUT_TYPE pointerType;
     POINTER_PEN_INFO penInfo;
     return
+        pGetPointerType && pGetPointerPenInfo &&
         pGetPointerType( GET_POINTERID_WPARAM( wParam ), &pointerType ) && ( pointerType == PT_PEN ) &&
         pGetPointerPenInfo( GET_POINTERID_WPARAM( wParam ), &penInfo ) && ( penInfo.penFlags & PEN_FLAG_INVERTED );
 }
@@ -2396,31 +2309,19 @@ bool IsPenInverted( WPARAM wParam )
 // UpdateMonitorInfo
 //
 //----------------------------------------------------------------------------
-void UpdateMonitorInfo( POINT point, MONITORINFO* monInfo )
-{
-    HMONITOR hMon{};
-    if( pMonitorFromPoint != nullptr )
-    {
-        hMon = pMonitorFromPoint( point, MONITOR_DEFAULTTONEAREST );
+bool UpdateMonitorInfo(POINT point, MONITORINFO* info) noexcept {
+    if (!info) return false;
+    *info = {}; info->cbSize = sizeof(*info);
+    HMONITOR monitor = pMonitorFromPoint ? pMonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) : nullptr;
+    if (!monitor || !pGetMonitorInfo || !pGetMonitorInfo(monitor, info) ||
+        info->rcMonitor.right<=info->rcMonitor.left || info->rcMonitor.bottom<=info->rcMonitor.top) {
+        *info = {}; info->cbSize = sizeof(*info);
+        info->rcMonitor = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        info->rcWork = info->rcMonitor;
+        info->dwFlags = MONITORINFOF_PRIMARY;
     }
-    if( hMon != nullptr )
-    {
-        monInfo->cbSize = sizeof *monInfo;
-        pGetMonitorInfo( hMon, monInfo );
-    }
-    else
-    {
-        *monInfo = {};
-        HDC hdcScreen = CreateDC( L"DISPLAY", nullptr, nullptr, nullptr );
-        if( hdcScreen != nullptr )
-        {
-            monInfo->rcMonitor.right = GetDeviceCaps( hdcScreen, HORZRES );
-            monInfo->rcMonitor.bottom = GetDeviceCaps( hdcScreen, VERTRES );
-            DeleteDC( hdcScreen );
-        }
-    }
+    return info->rcMonitor.right>info->rcMonitor.left && info->rcMonitor.bottom>info->rcMonitor.top;
 }
-
 
 //----------------------------------------------------------------------------
 //
@@ -2460,7 +2361,6 @@ LRESULT APIENTRY MainWndProc(
     static BOOLEAN	g_Zoomed = FALSE;
 
 
-    static DEVMODE	secondaryDevMode;
     static RECT		g_LiveZoomSourceRect;
     static float	g_LiveZoomLevel;
     static float	zoomLevel;
@@ -2501,6 +2401,9 @@ LRESULT APIENTRY MainWndProc(
     static BOOLEAN	activeBreakShowBackgroundFile = g_BreakShowBackgroundFile;
     static TCHAR    activeBreakBackgroundFile[MAX_PATH] = {0};
     static UINT     wmTaskbarCreated;
+    static zoomit::DisplayTopology displayTopology;
+    static unsigned displayRetries{};
+    static bool displayResetPending{};
 #if 0
     TITLEBARINFO	titleBarInfo;
     WINDOWINFO		targetWindowInfo;
@@ -2536,6 +2439,7 @@ LRESULT APIENTRY MainWndProc(
 
     switch (message) {
     case WM_CREATE:
+        displayTopology = zoomit::ReadDisplayTopology();
 
         // get default font
         GetObject( GetStockObject(DEFAULT_GUI_FONT), sizeof g_LogFont, &g_LogFont ); 
@@ -2576,28 +2480,28 @@ LRESULT APIENTRY MainWndProc(
 
             if( g_ToggleKey && !RegisterHotKey( hWnd, ZOOM_HOTKEY, g_ToggleMod, g_ToggleKey & 0xFF)) {
 
-                MessageBox( hWnd, L"The specified zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
+                ShowAppMessage( hWnd, L"The specified zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
                     APPNAME, MB_ICONERROR );
                 showOptions = TRUE;
 
-            } else if( g_LiveZoomToggleKey && 
+            } else if( pMagInitialize && g_LiveZoomToggleKey &&
                 (!RegisterHotKey( hWnd, LIVE_HOTKEY, g_LiveZoomToggleMod, g_LiveZoomToggleKey & 0xFF) ||
                     !RegisterHotKey(hWnd, LIVE_DRAW_HOTKEY, (g_LiveZoomToggleMod ^ MOD_SHIFT), g_LiveZoomToggleKey & 0xFF))) {
 
-                MessageBox( hWnd, L"The specified live-zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
+                ShowAppMessage( hWnd, L"The specified live-zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.",
                     APPNAME, MB_ICONERROR );
                 showOptions = TRUE;
 
             } else if( g_DrawToggleKey && !RegisterHotKey( hWnd, DRAW_HOTKEY, g_DrawToggleMod, g_DrawToggleKey & 0xFF )) {
 
-                MessageBox( hWnd, L"The specified draw w/out zoom hotkey is already in use.\nSelect a different draw w/out zoom hotkey.",
+                ShowAppMessage( hWnd, L"The specified draw w/out zoom hotkey is already in use.\nSelect a different draw w/out zoom hotkey.",
                     APPNAME, MB_ICONERROR );
                 showOptions = TRUE;
 
             }
             else if (g_BreakToggleKey && !RegisterHotKey(hWnd, BREAK_HOTKEY, g_BreakToggleMod, g_BreakToggleKey & 0xFF)) {
 
-                MessageBox(hWnd, L"The specified break timer hotkey is already in use.\nSelect a different break timer hotkey.",
+                ShowAppMessage(hWnd, L"The specified break timer hotkey is already in use.\nSelect a different break timer hotkey.",
                     APPNAME, MB_ICONERROR);
                 showOptions = TRUE;
 
@@ -2607,7 +2511,7 @@ LRESULT APIENTRY MainWndProc(
                 (!RegisterHotKey(hWnd, SNIP_HOTKEY, g_SnipToggleMod, g_SnipToggleKey & 0xFF) ||
                  !RegisterHotKey(hWnd, SNIP_SAVE_HOTKEY, (g_SnipToggleMod ^ MOD_SHIFT), g_SnipToggleKey & 0xFF))) {
 
-                MessageBox(hWnd, L"The specified snip hotkey is already in use.\nSelect a different snip hotkey.",
+                ShowAppMessage(hWnd, L"The specified snip hotkey is already in use.\nSelect a different snip hotkey.",
                     APPNAME, MB_ICONERROR);
                 showOptions = TRUE;
 
@@ -2621,6 +2525,49 @@ LRESULT APIENTRY MainWndProc(
         SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_NORMAL );
         wmTaskbarCreated = RegisterWindowMessage(_T("TaskbarCreated"));
         return TRUE;
+
+    case WM_SYSCOMMAND:
+        if (SuppressIdleCommand(wParam)) return 0;
+        break;
+
+    case WM_DISPLAYCHANGE:
+    case WM_DPICHANGED:
+        displayResetPending = true;
+        [[fallthrough]];
+    case WM_DEVICECHANGE:
+        if (message == WM_DEVICECHANGE && wParam != DBT_DEVNODES_CHANGED) break;
+        displayRetries = 0;
+        PostMessage(hWnd, WM_USER_CHECK_DISPLAYS, 0, 0);
+        break;
+
+    case WM_USER_CHECK_DISPLAYS: {
+        const auto current = zoomit::ReadDisplayTopology();
+        const bool changed = displayResetPending ||
+            (current.valid && displayTopology.valid && !(current == displayTopology));
+        if (changed) {
+            // Never rebuild capture surfaces while the nested Snip/save loop uses them.
+            if (g_SelectionActive || g_bSaveInProgress || hWndOptions) {
+                SetTimer(hWnd, 4, 100, nullptr);
+                return 0;
+            }
+            g_ZoomOnLiveZoom = FALSE;
+            KillTimer(hWnd, 3);
+            SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
+            if (IsWindow(g_hWndLiveZoom)) DestroyWindow(g_hWndLiveZoom);
+            if (g_Zoomed || g_TimerActive) SendMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY, SHALLOW_DESTROY);
+            ShowWindow(hWnd, SW_HIDE);
+            ClipCursor(nullptr); RestoreSystemPointer();
+            displayResetPending = false;
+        }
+        if (current.valid) { displayTopology = current; KillTimer(hWnd, 4); }
+        else if (++displayRetries < 10) SetTimer(hWnd, 4, 100, nullptr);
+        else KillTimer(hWnd, 4);
+        return 0;
+    }
+
+    case WM_USER_END_SESSION:
+        if (g_Zoomed || g_TimerActive) SendMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY, lParam);
+        return 0;
 
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT && g_Zoomed &&
@@ -2640,7 +2587,7 @@ LRESULT APIENTRY MainWndProc(
         return 0;
 
     case WM_HOTKEY:
-
+        if (g_SelectionActive || g_bSaveInProgress) return 0;
 
         //
         // Magic value that comes from tray context menu
@@ -2655,6 +2602,7 @@ LRESULT APIENTRY MainWndProc(
         switch( wParam ) {
         case LIVE_DRAW_HOTKEY:
         {
+            if (!pMagInitialize || !pMagSetWindowFilterList || !pSetLayeredWindowAttributes) break;
             OutputDebug(L"LIVE_DRAW_HOTKEY\n");
             LONG_PTR exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
 
@@ -2698,9 +2646,11 @@ LRESULT APIENTRY MainWndProc(
                 } else {
                     OutputDebug(L"   Not in Live zoom\n");
                     SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, wParam == LIVE_DRAW_HOTKEY ? LIVE_DRAW_ZOOM : 0 );
+                    if (!g_Zoomed) break;
                     zoomLevel = zoomTelescopeTarget = 1;
                     SendMessage( hWnd, WM_LBUTTONDOWN, 0, MAKELPARAM( cursorPos.x, cursorPos.y ));
                 }
+                if (!g_Zoomed) break;
                 if(wParam == LIVE_DRAW_HOTKEY) {
 
                     SetLayeredWindowAttributes(hWnd, COLORREF(RGB(0, 0, 0)), 0, LWA_COLORKEY);
@@ -2743,6 +2693,7 @@ LRESULT APIENTRY MainWndProc(
                 {
                     SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, LIVE_DRAW_ZOOM);
                 }
+                if (!g_Zoomed) break;
                 zoomLevel = zoomTelescopeTarget = 1;
             }
             else if( g_Drawing )
@@ -2813,6 +2764,7 @@ LRESULT APIENTRY MainWndProc(
             //
             // Live zoom
             //
+            if (!pMagInitialize || !pMagSetWindowTransform || !pMagSetWindowSource || !pMagSetWindowFilterList) break;
             OutputDebug(L"*** LIVE_HOTKEY\n");
 
             // If LiveZoom and LiveDraw are active then exit both
@@ -2836,7 +2788,7 @@ LRESULT APIENTRY MainWndProc(
                         0, 0, 0, 0, NULL, NULL, g_hInstance, static_cast<PVOID>(GetForegroundWindow()) );
                     if (!g_hWndLiveZoom) {
                         if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
-                        MessageBox(hWnd, L"Unable to initialize LiveZoom.", APPNAME, MB_ICONERROR);
+                        ShowAppMessage(hWnd, L"Unable to initialize LiveZoom.", APPNAME, MB_ICONERROR);
                         break;
                     }
                     pSetLayeredWindowAttributes( hWnd, 0, 0, LWA_ALPHA );
@@ -2880,21 +2832,14 @@ LRESULT APIENTRY MainWndProc(
                 //
                 // Finished with break timer
                 //
-                if( g_BreakOnSecondary )
-                {
-                    EnableDisableSecondaryDisplay( hWnd, FALSE, &secondaryDevMode );
-                }
+
 
                 if( lParam != SHALLOW_DESTROY )
                 {
                     ShowWindow( hWnd, SW_HIDE );
-                    if( g_hBackgroundBmp )
-                    {
-                        DeleteDC( g_hDcBackgroundFile ); g_hDcBackgroundFile = nullptr;
-                        DeleteObject( g_hBackgroundBmp );
-                        g_hBackgroundBmp = NULL;
-                    }
                 }
+                DeleteDC(g_hDcBackgroundFile); g_hDcBackgroundFile=nullptr;
+                DeleteObject(g_hBackgroundBmp); g_hBackgroundBmp=nullptr;
 
                 SetFocus( GetDesktopWindow() );
                 KillTimer( hWnd, 0 );
@@ -2942,7 +2887,11 @@ LRESULT APIENTRY MainWndProc(
                     bmp.bmWidth = width;
                     bmp.bmHeight = height;
                     bmp.bmWidthBytes = ((bmp.bmWidth + 15) &~15)/8; 
-                    hbmpCompat = CreateBitmap(bmp.bmWidth, bmp.bmHeight, 
+#ifdef ZOOMIT_TESTING
+                    if (g_TestFailZoomAllocation) { hbmpCompat = nullptr; g_TestFailZoomAllocation = false; }
+                    else
+#endif
+                    hbmpCompat = CreateBitmap(bmp.bmWidth, bmp.bmHeight,
                         bmp.bmPlanes, bmp.bmBitsPixel, static_cast<CONST VOID *>(NULL));
                      SelectObject(hdcScreenCompat, hbmpCompat); 
 
@@ -2958,23 +2907,33 @@ LRESULT APIENTRY MainWndProc(
                         bmp.bmBitsPixel, static_cast<CONST VOID *>(NULL));
                     SelectObject(hdcScreenCursorCompat, hbmpCursorCompat);
 
-                    BitBlt(hdcScreenCompat, 0, 0, width, height, hdcScreen,
-                           monInfo.rcMonitor.left, monInfo.rcMonitor.top, SRCCOPY | CAPTUREBLT);
-                    BitBlt(hdcScreenSaveCompat, 0, 0, width, height, hdcScreen,
-                           monInfo.rcMonitor.left, monInfo.rcMonitor.top, SRCCOPY | CAPTUREBLT);
-
-                    // Abort cleanly if a display or font allocation fails.
-                    if (!hdcScreen || !hdcScreenCompat || !hdcScreenSaveCompat ||
-                        !hdcScreenCursorCompat || !hbmpCompat || !hbmpDrawingCompat || !hbmpCursorCompat) {
+                    const bool resourcesReady = hdcScreen && hdcScreenCompat && hdcScreenSaveCompat &&
+                        hdcScreenCursorCompat && hbmpCompat && hbmpDrawingCompat && hbmpCursorCompat;
+                    bool captureReady = false;
+                    if (resourcesReady) {
+#ifdef ZOOMIT_TESTING
+                        if (g_TestFailCapture) g_TestFailCapture = false;
+                        else
+#endif
+                        captureReady = BitBlt(hdcScreenCompat, 0, 0, width, height, hdcScreen,
+                            monInfo.rcMonitor.left, monInfo.rcMonitor.top, SRCCOPY | CAPTUREBLT) &&
+                            BitBlt(hdcScreenSaveCompat, 0, 0, width, height, hdcScreen,
+                            monInfo.rcMonitor.left, monInfo.rcMonitor.top, SRCCOPY | CAPTUREBLT);
+                    }
+                    // A still allocated display DC can lose validity during a topology change.
+                    if (!captureReady) {
 
                         releaseSession();
                         g_Zoomed = FALSE;
                         g_ZoomOnLiveZoom = FALSE;
+                        KillTimer(hWnd, 3);
+                        SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
+                        if (IsWindow(g_hWndLiveZoomMag)) pMagSetWindowFilterList(g_hWndLiveZoomMag, MW_FILTERMODE_EXCLUDE, 1, &hWnd);
                         if (IsWindowVisible(g_hWndLiveZoom))
                             SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
                         else if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
                         ShowWindow(hWnd, SW_HIDE);
-                        MessageBox(hWnd, L"Not enough graphics resources to enter zoom mode.", APPNAME, MB_ICONERROR);
+                        ShowAppMessage(hWnd, L"Unable to capture the screen. Check graphics resources and display configuration.", APPNAME, MB_ICONERROR);
                         break;
                     }
                     // Create drawing pen
@@ -3146,7 +3105,7 @@ LRESULT APIENTRY MainWndProc(
             GetLayeredWindowAttributes(hWnd, NULL, NULL, &layeringFlag);
             if( !(layeringFlag & LWA_COLORKEY)) {
 
-                PostMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0);
+                PostMessage(hWnd, WM_USER_END_SESSION, 0, 0);
             }
         }
         break;
@@ -3484,7 +3443,7 @@ LRESULT APIENTRY MainWndProc(
             {
 
                 forcePenResize = TRUE;
-                PostMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
+                PostMessage(hWnd, WM_USER_END_SESSION, 0, 0);
 
                 // In case we were in liveDraw
                 if( GetWindowLong(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) {
@@ -3508,7 +3467,9 @@ LRESULT APIENTRY MainWndProc(
         OutputDebug(L"MOUSEMOVE: zoomed: %d drawing: %d tracing: %d\n",
             g_Zoomed, g_Drawing, g_Tracing);
 
+#if defined(_DEBUG)
         OutputDebug(L"Window visible: %d Topmost: %d\n", IsWindowVisible(hWnd), GetWindowLong(hWnd, GWL_EXSTYLE)& WS_EX_TOPMOST);
+#endif
 
         if( g_Zoomed && !g_bSaveInProgress ) {
 
@@ -3611,11 +3572,6 @@ LRESULT APIENTRY MainWndProc(
                     OutputDebug(L"Mousemove: Tracing\n");
 
                     g_HaveDrawn = TRUE;
-                    Gdiplus::Graphics	dstGraphics(hdcScreenCompat);
-                    if( ( GetWindowLong( g_hWndMain, GWL_EXSTYLE ) & WS_EX_LAYERED ) == 0 )
-                    {
-                        dstGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-                    }
                     Gdiplus::Color	color = ColorFromColorRef(g_PenColor);
                     Gdiplus::Pen pen(color, static_cast<Gdiplus::REAL>(g_PenWidth));
                     pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
@@ -3655,6 +3611,9 @@ LRESULT APIENTRY MainWndProc(
                     else {
 
                         // Normal tracing
+                        Gdiplus::Graphics dstGraphics(hdcScreenCompat);
+                        if (!(GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED))
+                            dstGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
                         dstGraphics.DrawLine(&pen, static_cast<INT>(prevPt.x), static_cast<INT>(prevPt.y),
                                 static_cast<INT>(currentPt.x), static_cast<INT>(currentPt.y));
                     }
@@ -4048,7 +4007,7 @@ LRESULT APIENTRY MainWndProc(
             if( !g_Drawing )
             {
                 // Turn off
-                PostMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
+                PostMessage(hWnd, WM_USER_END_SESSION, 0, 0);
             }
             else
             {
@@ -4081,7 +4040,7 @@ LRESULT APIENTRY MainWndProc(
         else if( g_TimerActive )
         {
             // Turn off
-            PostMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
+            PostMessage(hWnd, WM_USER_END_SESSION, 0, 0);
         }
         break;
 
@@ -4107,7 +4066,7 @@ LRESULT APIENTRY MainWndProc(
         {
             if (!RegisterHotKey(hWnd, ZOOM_HOTKEY, g_ToggleMod, g_ToggleKey & 0xFF))
             {
-                MessageBox(hWnd, L"The specified zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.", APPNAME, MB_ICONERROR);
+                ShowAppMessage(hWnd, L"The specified zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.", APPNAME, MB_ICONERROR);
                 showOptions = TRUE;
             }
         }
@@ -4116,7 +4075,7 @@ LRESULT APIENTRY MainWndProc(
             if (!RegisterHotKey(hWnd, LIVE_HOTKEY, g_LiveZoomToggleMod, g_LiveZoomToggleKey & 0xFF) ||
                 !RegisterHotKey(hWnd, LIVE_DRAW_HOTKEY, g_LiveZoomToggleMod ^ MOD_SHIFT, g_LiveZoomToggleKey & 0xFF))
             {
-                MessageBox(hWnd, L"The specified live-zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.", APPNAME, MB_ICONERROR);
+                ShowAppMessage(hWnd, L"The specified live-zoom toggle hotkey is already in use.\nSelect a different zoom toggle hotkey.", APPNAME, MB_ICONERROR);
                 showOptions = TRUE;
             }
         }
@@ -4124,7 +4083,7 @@ LRESULT APIENTRY MainWndProc(
         {
             if (!RegisterHotKey(hWnd, DRAW_HOTKEY, g_DrawToggleMod, g_DrawToggleKey & 0xFF))
             {
-                MessageBox(hWnd, L"The specified draw w/out zoom hotkey is already in use.\nSelect a different draw w/out zoom hotkey.", APPNAME, MB_ICONERROR);
+                ShowAppMessage(hWnd, L"The specified draw w/out zoom hotkey is already in use.\nSelect a different draw w/out zoom hotkey.", APPNAME, MB_ICONERROR);
                 showOptions = TRUE;
             }
         }
@@ -4132,7 +4091,7 @@ LRESULT APIENTRY MainWndProc(
         {
             if (!RegisterHotKey(hWnd, BREAK_HOTKEY, g_BreakToggleMod, g_BreakToggleKey & 0xFF))
             {
-                MessageBox(hWnd, L"The specified break timer hotkey is already in use.\nSelect a different break timer hotkey.", APPNAME, MB_ICONERROR);
+                ShowAppMessage(hWnd, L"The specified break timer hotkey is already in use.\nSelect a different break timer hotkey.", APPNAME, MB_ICONERROR);
                 showOptions = TRUE;
             }
         }
@@ -4142,7 +4101,7 @@ LRESULT APIENTRY MainWndProc(
             if (!RegisterHotKey(hWnd, SNIP_HOTKEY, g_SnipToggleMod, g_SnipToggleKey & 0xFF) ||
                 !RegisterHotKey(hWnd, SNIP_SAVE_HOTKEY, (g_SnipToggleMod ^ MOD_SHIFT), g_SnipToggleKey & 0xFF))
             {
-                MessageBox(hWnd, L"The specified snip hotkey is already in use.\nSelect a different snip hotkey.", APPNAME, MB_ICONERROR);
+                ShowAppMessage(hWnd, L"The specified snip hotkey is already in use.\nSelect a different snip hotkey.", APPNAME, MB_ICONERROR);
                 showOptions = TRUE;
             }
         }
@@ -4217,7 +4176,7 @@ LRESULT APIENTRY MainWndProc(
             if (!hInterimSaveDc || !hInterimSaveBitmap || !hSaveDc) {
                 DeleteDC(hInterimSaveDc); DeleteDC(hSaveDc); DeleteObject(hInterimSaveBitmap);
                 ClipCursor(&oldClipRect);
-                MessageBox(hWnd, L"Not enough graphics resources to save this image.", APPNAME, MB_ICONERROR);
+                ShowAppMessage(hWnd, L"Not enough graphics resources to save this image.", APPNAME, MB_ICONERROR);
                 break;
             }
 #if SCALE_HALFTONE
@@ -4227,14 +4186,20 @@ LRESULT APIENTRY MainWndProc(
             SetStretchBltMode( hInterimSaveDc, COLORONCOLOR );
             SetStretchBltMode( hSaveDc, COLORONCOLOR );
 #endif
-            StretchBlt( hInterimSaveDc,
+            if (!CaptureImagePixels( hInterimSaveDc,
                         0, 0,
                         copyWidth, copyHeight,
                         hdcScreen,
                         monInfo.rcMonitor.left + copyX,
                         monInfo.rcMonitor.top + copyY,
                         copyWidth, copyHeight,
-                        SRCCOPY|CAPTUREBLT );
+                        SRCCOPY|CAPTUREBLT )) {
+                DeleteDC(hInterimSaveDc); DeleteDC(hSaveDc); DeleteObject(hInterimSaveBitmap);
+                ClipCursor(&oldClipRect);
+                if (lParam != SHALLOW_ZOOM) SetCursorPos(local_savedCursorPos.x,local_savedCursorPos.y);
+                ShowAppMessage(hWnd,L"Unable to capture this image. Check the display configuration.",APPNAME,MB_ICONERROR);
+                break;
+            }
 
             g_bSaveInProgress = true;
             memset( &openFileName, 0, sizeof(openFileName ));
@@ -4282,7 +4247,7 @@ LRESULT APIENTRY MainWndProc(
                     hSaveBitmap = CreateCompatibleBitmap( hdcScreen, saveWidth, saveHeight );
                     SelectObject( hSaveDc, hSaveBitmap );
 
-                    StretchBlt( hSaveDc,
+                    const BOOL scaled = hSaveBitmap && CaptureImagePixels( hSaveDc,
                                 0, 0,
                                 saveWidth, saveHeight,
                                 hInterimSaveDc,
@@ -4291,10 +4256,10 @@ LRESULT APIENTRY MainWndProc(
                                 copyWidth, copyHeight,
                                 SRCCOPY | CAPTUREBLT );
 				
-                    saveResult = SavePng(targetFilePath, hSaveBitmap);
+                    saveResult = scaled ? SavePng(targetFilePath,hSaveBitmap) : ERROR_GEN_FAILURE;
                 }
                 if (saveResult != ERROR_SUCCESS)
-                    MessageBox(hWnd, L"Unable to save this image. Check the destination and available resources.", APPNAME, MB_ICONERROR);
+                    ShowAppMessage(hWnd, L"Unable to save this image. Check the destination and available resources.", APPNAME, MB_ICONERROR);
             }
             g_bSaveInProgress = false;
 
@@ -4358,7 +4323,7 @@ LRESULT APIENTRY MainWndProc(
             hSaveDc = CreateCompatibleDC( hdcScreen );
             if (!hSaveBitmap || !hSaveDc) {
                 DeleteDC(hSaveDc); DeleteObject(hSaveBitmap);
-                MessageBox(hWnd, L"Not enough graphics resources to copy this image.", APPNAME, MB_ICONERROR);
+                ShowAppMessage(hWnd, L"Not enough graphics resources to copy this image.", APPNAME, MB_ICONERROR);
                 break;
             }
             SelectObject( hSaveDc, hSaveBitmap );
@@ -4367,14 +4332,18 @@ LRESULT APIENTRY MainWndProc(
 #else
             SetStretchBltMode( hSaveDc, COLORONCOLOR );
 #endif
-			StretchBlt( hSaveDc,
+            if (!CaptureImagePixels( hSaveDc,
                         0, 0,
                         copyWidth, copyHeight,
                         hdcScreen,
                         monInfo.rcMonitor.left + copyX,
                         monInfo.rcMonitor.top + copyY,
                         copyWidth, copyHeight,
-                        SRCCOPY|CAPTUREBLT ); 
+                        SRCCOPY|CAPTUREBLT )) {
+                DeleteDC(hSaveDc); DeleteObject(hSaveBitmap);
+                ShowAppMessage(hWnd,L"Unable to capture this image. Check the display configuration.",APPNAME,MB_ICONERROR);
+                break;
+            }
 
             DeleteDC(hSaveDc);
             hSaveDc = nullptr;
@@ -4418,42 +4387,18 @@ LRESULT APIENTRY MainWndProc(
 
         case IDC_BREAK:
         {
-            // Manage handles, clean visual transitions, and Options delta
-            if( g_TimerActive )
-            {
-                if( activeBreakShowBackgroundFile != g_BreakShowBackgroundFile ||
-                    activeBreakShowDesktop != g_BreakShowDesktop )
-                {
-                    if( g_BreakShowBackgroundFile && !g_BreakShowDesktop )
-                    {
-                        SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, SHALLOW_DESTROY );
-                    }
-                    else
-                    {
-                        SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
-                    }
-                }
-                else
-                {
-                    SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, SHALLOW_DESTROY );
-                    g_TimerActive = TRUE;
-                }
-            }
+            if (g_TimerActive) SendMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0);
 
             hdcScreen = CreateDC( L"DISPLAY", static_cast<PTCHAR>(NULL), static_cast<PTCHAR>(NULL), static_cast<CONST DEVMODE*>(NULL) );
 
-            // toggle second monitor
-            // FIX: we should save whether or not we've switched to a second monitor
-            // rather than just assume that the setting hasn't changed since the break timer
-            // became active
-            if( g_BreakOnSecondary )
-            {
-                EnableDisableSecondaryDisplay( hWnd, TRUE, &secondaryDevMode );
+            // A cloned desktop is one logical monitor. Use a real second desktop when present.
+            GetCursorPos(&cursorPos);
+            UpdateMonitorInfo(cursorPos, &monInfo);
+            RECT secondary{};
+            if (g_BreakOnSecondary && zoomit::FindSecondaryMonitor(secondary)) {
+                monInfo.rcMonitor = secondary;
+                monInfo.rcWork = secondary;
             }
-
-            // Determine what monitor we're on
-            GetCursorPos( &cursorPos );
-            UpdateMonitorInfo( cursorPos, &monInfo );
             width = monInfo.rcMonitor.right - monInfo.rcMonitor.left;
             height = monInfo.rcMonitor.bottom - monInfo.rcMonitor.top;
 
@@ -4481,8 +4426,9 @@ LRESULT APIENTRY MainWndProc(
                 if( g_hBackgroundBmp == NULL )
                 {
                     // Clean up hanging handles
-                    SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
-                    ErrorDialog( hWnd, L"Error loading background bitmap", GetLastError() );
+                    releaseSession();
+                    ShowWindow(hWnd, SW_HIDE);
+                    ErrorDialog(hWnd, L"Error loading background bitmap", ERROR_INVALID_DATA);
                     break;
                 }
                 g_hDcBackgroundFile = CreateCompatibleDC( hdcScreen );
@@ -4523,7 +4469,10 @@ LRESULT APIENTRY MainWndProc(
 
             if (!hdcScreen || !hdcScreenCompat || !hbmpCompat || !hTimerFont || !hNegativeTimerFont) {
                 releaseSession(); g_TimerActive = FALSE;
-                MessageBox(hWnd, L"Not enough graphics resources to enter timer mode.", APPNAME, MB_ICONERROR);
+                DeleteDC(g_hDcBackgroundFile); g_hDcBackgroundFile=nullptr;
+                DeleteObject(g_hBackgroundBmp); g_hBackgroundBmp=nullptr;
+                ShowWindow(hWnd, SW_HIDE);
+                ShowAppMessage(hWnd, L"Not enough graphics resources to enter timer mode.", APPNAME, MB_ICONERROR);
                 break;
             }
             SetTextColor( hdcScreenCompat, g_BreakPenColor );
@@ -4564,6 +4513,10 @@ LRESULT APIENTRY MainWndProc(
 
     case WM_TIMER:
         switch( wParam ) {
+        case 4:
+            KillTimer(hWnd, 4);
+            SendMessage(hWnd, WM_USER_CHECK_DISPLAYS, 0, 0);
+            break;
         case 0:
             //
             // Break timer
@@ -4829,7 +4782,7 @@ LRESULT APIENTRY MainWndProc(
 
     case WM_DESTROY:
 
-        KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3);
+        KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3); KillTimer(hWnd, 4);
         if (g_TimerActive) EnableDisableScreenSaver(TRUE);
         EnableDisableStickyKeys(TRUE);
         ClipCursor(nullptr);
@@ -4907,7 +4860,7 @@ LRESULT CALLBACK LiveZoomWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 
         if (!g_fullScreenWorkaround && !g_hWndLiveZoomMag) return -1;
         ShowWindow( hWnd, SW_SHOW );
-        InvalidateRect( g_hWndLiveZoomMag, NULL, TRUE );
+        if (IsWindow(g_hWndLiveZoomMag)) InvalidateRect(g_hWndLiveZoomMag, nullptr, TRUE);
 
         if( !g_fullScreenWorkaround )
             SetForegroundWindow(static_cast<HWND>(reinterpret_cast<LPCREATESTRUCT>(lParam)->lpCreateParams));
@@ -5015,7 +4968,7 @@ LRESULT CALLBACK LiveZoomWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
             if( g_SelectionActive == TRUE )
             {
                 // Still redraw to keep the contents live
-                InvalidateRect( g_hWndLiveZoomMag, nullptr, TRUE );
+                if (IsWindow(g_hWndLiveZoomMag)) InvalidateRect(g_hWndLiveZoomMag, nullptr, TRUE);
                 break;
             }
 
@@ -5161,7 +5114,7 @@ LRESULT CALLBACK LiveZoomWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
             if( !g_fullScreenWorkaround ) {
 
                 // Force redraw to refresh screen contents
-                InvalidateRect(g_hWndLiveZoomMag, NULL, TRUE);
+                if (IsWindow(g_hWndLiveZoomMag)) InvalidateRect(g_hWndLiveZoomMag, nullptr, TRUE);
             }
 
             // are we done zooming?
@@ -5288,8 +5241,8 @@ LRESULT CALLBACK LiveZoomWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 
     case WM_SIZE:
         GetClientRect(hWnd, &rc);
-        SetWindowPos(g_hWndLiveZoomMag, NULL, 
-            rc.left, rc.top, rc.right, rc.bottom, 0 );
+        if (IsWindow(g_hWndLiveZoomMag)) SetWindowPos(g_hWndLiveZoomMag, nullptr,
+            rc.left, rc.top, rc.right, rc.bottom, 0);
         break;
 
     case WM_USER_GET_ZOOM_LEVEL:
@@ -5314,7 +5267,7 @@ LRESULT CALLBACK LiveZoomWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
                 style &= ~MS_SHOWMAGNIFIEDCURSOR;
             }
             SetWindowLong( g_hWndLiveZoomMag, GWL_STYLE, style );
-            InvalidateRect( g_hWndLiveZoomMag, nullptr, TRUE );
+            if (IsWindow(g_hWndLiveZoomMag)) InvalidateRect(g_hWndLiveZoomMag, nullptr, TRUE);
             RedrawWindow( hWnd, nullptr, nullptr, RDW_ALLCHILDREN | RDW_UPDATENOW );
         }
         break;
@@ -5369,6 +5322,8 @@ HWND InitInstance( HINSTANCE hInstance, int nCmdShow )
     HWND	  hWndMain;
 
     g_hInstance = hInstance;
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES | ICC_LINK_CLASS};
+    if (!InitCommonControlsEx(&controls)) return nullptr;
 
     // If magnification, set default hotkey for live zoom
     if( pMagInitialize ) {
@@ -5465,7 +5420,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     if(instanceError == ERROR_ALREADY_EXISTS) {
         if (g_StartedByPowerToys)
         {
-            MessageBox(NULL, L"We've detected another instance of ZoomIt is already running.\nCan't start a new ZoomIt instance from PowerToys.",
+            ShowAppMessage(NULL, L"We've detected another instance of ZoomIt is already running.\nCan't start a new ZoomIt instance from PowerToys.",
             APPNAME, MB_ICONERROR | MB_SETFOREGROUND);
             return 1;
         }
@@ -5496,6 +5451,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     // load accelerators
     hAccel = LoadAccelerators( hInstance, TEXT("ACCELERATORS"));
 
+    if (!g_GraphicsInit.ready()) {
+        ShowAppMessage(nullptr, L"Unable to initialize Windows graphics.", APPNAME, MB_ICONERROR);
+        return 1;
+    }
     if (FAILED(CoInitialize(0)))
     {
         return 0;

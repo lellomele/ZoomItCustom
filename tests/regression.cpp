@@ -3,6 +3,7 @@
 #include <psapi.h>
 #include <chrono>
 #include <stdexcept>
+#include <array>
 void require(bool condition, const char* message) {
     if(!condition) throw std::runtime_error(message);
 }
@@ -70,23 +71,29 @@ bool aboutCaptured=false;
 bool optionsDisplayChange=false;
 bool optionsSaveHotkey=false;
 const wchar_t* aboutCapturePath=nullptr;
+const wchar_t* liveCapturePath=nullptr;
 INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_TIMER && wParam == 97) {
         KillTimer(dialog, 97);
-        if(!aboutCaptured && aboutCapturePath) {
+        if(!aboutCaptured && (aboutCapturePath || liveCapturePath)) {
             HWND tabs=GetDlgItem(dialog,IDC_TAB);
-            TabCtrl_SetCurSel(tabs,ABOUT_PAGE);
-            NMHDR notification{tabs,IDC_TAB,TCN_SELCHANGE};
-            SendMessage(dialog,WM_NOTIFY,IDC_TAB,reinterpret_cast<LPARAM>(&notification));
-            RedrawWindow(dialog,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW);
-            optionsValid &= IsWindowVisible(g_OptionsTabs[ABOUT_PAGE].hPage) != FALSE;
-            RECT window{};GetWindowRect(dialog,&window);
-            HDC screen=GetDC(nullptr), memory=CreateCompatibleDC(screen);
-            HBITMAP image=CreateCompatibleBitmap(screen,window.right-window.left,window.bottom-window.top);
-            SelectObject(memory,image);
-            PrintWindow(dialog,memory,PW_RENDERFULLCONTENT);
-            SavePng(const_cast<wchar_t*>(aboutCapturePath),image);
-            DeleteDC(memory);DeleteObject(image);ReleaseDC(nullptr,screen);
+            auto capturePage=[&](int page,const wchar_t* path) {
+                TabCtrl_SetCurSel(tabs,page);
+                NMHDR notification{tabs,IDC_TAB,TCN_SELCHANGE};
+                SendMessage(dialog,WM_NOTIFY,IDC_TAB,reinterpret_cast<LPARAM>(&notification));
+                RedrawWindow(dialog,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+                optionsValid &= IsWindowVisible(g_OptionsTabs[page].hPage) != FALSE;
+                RECT window{};GetWindowRect(dialog,&window);
+                HDC screen=GetDC(nullptr), memory=CreateCompatibleDC(screen);
+                HBITMAP image=CreateCompatibleBitmap(screen,window.right-window.left,window.bottom-window.top);
+                SelectObject(memory,image);
+                PrintWindow(dialog,memory,PW_RENDERFULLCONTENT);
+                const auto result=SavePng(const_cast<wchar_t*>(path),image);
+                DeleteDC(memory);DeleteObject(image);ReleaseDC(nullptr,screen);
+                optionsValid &= result==ERROR_SUCCESS;
+            };
+            if(liveCapturePath) capturePage(LIVE_PAGE,liveCapturePath);
+            if(aboutCapturePath) capturePage(ABOUT_PAGE,aboutCapturePath);
             aboutCaptured=true;
         }
         if (optionsDisplayChange) {
@@ -97,14 +104,23 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
         if (optionsSaveHotkey) {
             SendMessage(GetDlgItem(g_OptionsTabs[LIVE_PAGE].hPage,IDC_LIVE_HOTKEY),HKM_SETHOTKEY,
                         ((HOTKEYF_CONTROL|HOTKEYF_ALT)<<8)|VK_F24,0);
+            SendMessage(GetDlgItem(g_OptionsTabs[LIVE_PAGE].hPage,IDC_ZOOM_SLIDER),TBM_SETPOS,TRUE,4);
             SendMessage(dialog,WM_COMMAND,IDOK,0); optionsSaveHotkey=false;
         } else SendMessage(dialog, WM_COMMAND, IDCANCEL, 0);
         return TRUE;
     }
     auto result = OptionsProc(dialog, message, wParam, lParam);
     if (message == WM_INITDIALOG) {
-        optionsValid &= TabCtrl_GetItemCount(GetDlgItem(dialog, IDC_TAB)) == 6;
+        optionsValid &= TabCtrl_GetItemCount(GetDlgItem(dialog, IDC_TAB)) == 5;
         for (auto& page : g_OptionsTabs) optionsValid &= IsWindow(page.hPage) != FALSE;
+        HWND zoomSlider=GetDlgItem(g_OptionsTabs[LIVE_PAGE].hPage,IDC_ZOOM_SLIDER);
+        optionsValid &= IsWindow(zoomSlider) && SendMessage(zoomSlider,TBM_GETRANGEMAX,0,0)==5 &&
+                        SendMessage(zoomSlider,TBM_GETPOS,0,0)==g_SliderZoomLevel;
+        wchar_t firstTab[32]{}, lastTab[32]{};
+        TCITEM tabItem{}; tabItem.mask=TCIF_TEXT; tabItem.cchTextMax=_countof(firstTab);
+        tabItem.pszText=firstTab; TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),0,&tabItem);
+        tabItem.pszText=lastTab; TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),4,&tabItem);
+        optionsValid &= wcscmp(firstTab,L"LiveZoom")==0 && wcscmp(lastTab,L"About")==0;
         wchar_t copyright[256]{}, version[64]{};
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
@@ -118,8 +134,9 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
 
 int main(int argc, char** argv) {
     const bool snipOnly = argc>1 && strcmp(argv[1],"--snip-only")==0;
-    std::wstring capturePath;
+    std::wstring capturePath, livePath;
     if(argc>2) {capturePath=std::filesystem::absolute(argv[2]).wstring();aboutCapturePath=capturePath.c_str();}
+    if(argc>3) {livePath=std::filesystem::absolute(argv[3]).wstring();liveCapturePath=livePath.c_str();}
     POINT oldCursor{}; GetCursorPos(&oldCursor);
     try {
         RunUtilityGeometryTests();
@@ -147,14 +164,13 @@ int main(int argc, char** argv) {
             auto extended=mirror; extended.paths[1].source=1;
             require(!extended.mirrored() && !(mirror==extended),"Extended and duplicated desktops must be distinguished");
         }
-        require(g_ToggleKey==((HOTKEYF_CONTROL<<8)|'1') &&
-                g_LiveZoomToggleKey==((HOTKEYF_CONTROL<<8)|'2') &&
+        require(g_LiveZoomToggleKey==((HOTKEYF_CONTROL<<8)|'2') &&
                 g_DrawToggleKey==((HOTKEYF_CONTROL<<8)|'3') &&
                 g_BreakToggleKey==((HOTKEYF_CONTROL<<8)|'4') &&
                 g_SnipToggleKey==((HOTKEYF_CONTROL<<8)|'5'),"Default shortcuts must follow requested order");
-        g_ToggleKey='Z'; require(MigrateHotkeys(),"Old shortcut schema must migrate");
-        require(g_ToggleKey==((HOTKEYF_CONTROL<<8)|'1'),"Migrated zoom shortcut");
-        g_ToggleKey='Z'; require(!MigrateHotkeys() && g_ToggleKey=='Z',"Later customized shortcuts must be preserved");
+        g_LiveZoomToggleKey='L'; require(MigrateHotkeys(),"Old shortcut schema must migrate");
+        require(g_LiveZoomToggleKey==((HOTKEYF_CONTROL<<8)|'2'),"Migrated LiveZoom shortcut");
+        g_LiveZoomToggleKey='L'; require(!MigrateHotkeys() && g_LiveZoomToggleKey=='L',"Later customized shortcuts must be preserved");
         require(DecodeZoomLevel(EncodeZoomLevel(1.25f))==1.25f,"Fractional zoom must survive messages");
         g_SliderZoomLevel=0xffffffff; g_RootPenWidth=0xffffffff;
         g_BreakTimeout=0xffffffff; g_BreakTimerPosition=0xffffffff;
@@ -252,8 +268,7 @@ int main(int argc, char** argv) {
         Gdiplus::GdiplusShutdown(gdiplusToken);
         g_PenColor=COLOR_RED | 0xff000000; g_PenWidth=5;
         g_TestMode=true; g_ShowTrayIcon=false; g_OptionsShown=true;
-        g_ToggleKey=g_DrawToggleKey=g_LiveZoomToggleKey=g_BreakToggleKey=g_SnipToggleKey=0;
-        g_AnimateZoom=FALSE;
+        g_DrawToggleKey=g_LiveZoomToggleKey=g_BreakToggleKey=g_SnipToggleKey=0;
         pMagInitialize=MagInitialize;
         pMagSetWindowSource=MagSetWindowSource;
         pMagSetWindowTransform=MagSetWindowTransform;
@@ -269,7 +284,7 @@ int main(int argc, char** argv) {
         require(MagInitialize()!=FALSE,"Magnification API initialization");
         g_hWndMain=InitInstance(GetModuleHandle(nullptr),SW_HIDE);
         require(g_hWndMain!=nullptr,"Main window creation");
-        g_SliderZoomLevel=0; g_AnimateZoom=FALSE;
+        g_SliderZoomLevel=0;
         WNDCLASS wc{}; wc.lpfnWndProc=DefWindowProc; wc.hInstance=GetModuleHandle(nullptr); wc.hCursor=LoadCursor(nullptr,IDC_ARROW); wc.lpszClassName=L"ZoomItTestHost"; RegisterClass(&wc);
         HWND host=CreateWindowEx(0,L"ZoomItTestHost",L"ZoomIt regression tests",WS_OVERLAPPEDWINDOW,50,50,450,250,
                                  nullptr,nullptr,GetModuleHandle(nullptr),nullptr);
@@ -278,12 +293,12 @@ int main(int argc, char** argv) {
         SetCursorPos(125,125);
         {
             const auto errors=g_TestErrorCount;
-            g_TestFailZoomAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,0); pump(5);
+            g_TestFailCaptureAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,0); pump(5);
             require(!IsWindowVisible(g_hWndMain),"Drawing must abort when capture allocation fails");
-            g_TestFailZoomAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0); pump(5);
+            g_TestFailCaptureAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0); pump(5);
             require(!IsWindowVisible(g_hWndMain) && !g_SelectionActive,"Snip must not start after allocation failure");
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(100);
-            g_TestFailZoomAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,LIVE_DRAW_HOTKEY,0); pump(5);
+            g_TestFailCaptureAllocation=true; SendMessage(g_hWndMain,WM_HOTKEY,LIVE_DRAW_HOTKEY,0); pump(5);
             require(IsWindowVisible(g_hWndLiveZoom) && !(GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED),"Failed LiveDraw must restore existing LiveZoom");
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(5);
             require(g_TestErrorCount==errors+3,"Allocation failures must be reported exactly once");
@@ -300,132 +315,200 @@ int main(int argc, char** argv) {
         {
             const auto errors=g_TestErrorCount;
             g_TestFailCapture=true; SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,0); pump(5);
-            require(!IsWindowVisible(g_hWndMain),"Failed screen copy must abort zoom without leaving an overlay");
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(30);
+            require(!IsWindowVisible(g_hWndMain),"Failed screen copy must abort Draw without leaving an overlay");
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3')); pump(30);
             const auto objects=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
-            g_TestFailCapture=true; SendMessage(g_hWndMain,WM_COMMAND,IDC_COPY,SHALLOW_ZOOM);
+            g_TestFailCapture=true; SendMessage(g_hWndMain,WM_COMMAND,IDC_COPY,CAPTURE_KEEP_POINTER);
             require(!g_TestSnipBitmap && IsWindowVisible(g_hWndMain),"Failed Snip copy must not publish an uncaptured image");
-            g_TestFailCapture=true; SendMessage(g_hWndMain,WM_COMMAND,IDC_SAVE,SHALLOW_ZOOM);
+            g_TestFailCapture=true; SendMessage(g_hWndMain,WM_COMMAND,IDC_SAVE,CAPTURE_KEEP_POINTER);
             require(!g_bSaveInProgress && GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)==objects,"Failed save capture must release graphics resources");
             require(g_TestErrorCount==errors+3,"Copy failures must be reported once per operation");
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(5);
+            SendMessage(g_hWndMain,WM_USER_CAPTURE_SESSION,0,CAPTURE_CLOSE_NOW); pump(5);
         }
-        size_t zoomOnlyTransitions=0;
+        require(RegisterHotKey(nullptr,0x6ee,MOD_CONTROL,'1')!=FALSE,
+                "Ctrl+1 must be available because standalone Zoom no longer registers it");
+        UnregisterHotKey(nullptr,0x6ee);
         auto modeState=[&]{return SendMessage(g_hWndMain,WM_TEST_QUERY_MODE,0,0);};
-        for (bool fullscreen : {false,true}) for (bool exitWithEscape : {false,true}) {
-            g_fullScreenWorkaround=fullscreen;
-            SetCursorPos(125,125);
-            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(70);
-            require(IsWindowVisible(g_hWndLiveZoom),"LiveZoom must start before Zoom transition");
-            for (int wait=0;wait<50 && *reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0))!=g_ZoomLevels[g_SliderZoomLevel];++wait) pump(10);
-            const float originalLevel=*reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0));
-            require(originalLevel==g_ZoomLevels[g_SliderZoomLevel],"Initial LiveZoom animation must settle before comparing restored levels");
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(25);
-            require(IsWindowVisible(g_hWndMain) && !IsWindowVisible(g_hWndLiveZoom) && modeState()==9,
-                    "Ctrl+2 then Ctrl+1 must freeze LiveZoom without activating Draw or a stroke");
-            SendMessage(g_hWndMain,WM_SETCURSOR,reinterpret_cast<WPARAM>(g_hWndMain),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
-            CURSORINFO frozenCursor{sizeof(frozenCursor)};
-            require(GetCursorInfo(&frozenCursor) && (frozenCursor.flags&CURSOR_SHOWING) &&
-                    frozenCursor.hCursor==LoadCursor(nullptr,IDC_ARROW),"Frozen LiveZoom must keep a visible arrow before Draw");
-            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3')); pump(10);
-            require(modeState()==11,"Ctrl+3 must activate Draw in an existing frozen LiveZoom image");
+        auto canvasState=[&] {
+            TestCanvasState state{};
+            require(SendMessage(g_hWndMain,WM_TEST_QUERY_CANVAS,0,reinterpret_cast<LPARAM>(&state))==1 && state.canvas,
+                    "An active Draw session must expose its canvas to regression tests");
+            return state;
+        };
+        struct CanvasSnapshot {
+            TestCanvasState state{};
+            LRESULT mode{};
+            HWND live{}, magnifier{};
+            bool canvasVisible{}, liveVisible{}, layered{};
+            std::array<BYTE,80*60*3> rgb{};
+        };
+        auto snapshotCanvas=[&] {
+            CanvasSnapshot snapshot{};
+            snapshot.state=canvasState(); snapshot.mode=modeState();
+            snapshot.live=g_hWndLiveZoom; snapshot.magnifier=g_hWndLiveZoomMag;
+            snapshot.canvasVisible=IsWindowVisible(g_hWndMain)!=FALSE;
+            snapshot.liveVisible=IsWindowVisible(g_hWndLiveZoom)!=FALSE;
+            snapshot.layered=(GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED)!=0;
+            DrawingDib region(snapshot.state.canvas,Gdiplus::Rect(120,120,80,60));
+            require(region.pixels()!=nullptr,"Draw snapshot must capture real canvas pixels");
+            for(size_t pixel=0;pixel<80*60;++pixel)
+                for(size_t channel=0;channel<3;++channel)
+                    snapshot.rgb[pixel*3+channel]=region.pixels()[pixel*4+channel];
+            return snapshot;
+        };
+        size_t protectedLiveHotkeys=0, protectedDrawCases=0, liveEraseCases=0;
+        auto annotationSample=[&] {
+            DrawingDib region(canvasState().canvas,Gdiplus::Rect(148,148,12,5));
+            require(region.pixels()!=nullptr,"Erasure test must inspect real drawing pixels");
+            std::array<BYTE,12*5*3> rgb{};
+            for(size_t pixel=0;pixel<12*5;++pixel)
+                for(size_t channel=0;channel<3;++channel)
+                    rgb[pixel*3+channel]=region.pixels()[pixel*4+channel];
+            return rgb;
+        };
+        auto sampleIsBlack=[&] {
+            const auto rgb=annotationSample();
+            return std::all_of(rgb.begin(),rgb.end(),[](BYTE color){return color==0;});
+        };
+        auto eraseLiveDrawing=[&](bool penActive) {
+            require(!sampleIsBlack(),"Erasure test must begin with visible annotations in the sampled region");
+            SendMessage(g_hWndMain,WM_KEYDOWN,'E',0);
+            const auto state=canvasState();
+            require(sampleIsBlack() && state.undoCount==0 && !(modeState()&4),
+                    "E must erase LiveDraw pixels to transparent black and release undo history");
+            require(((modeState()&2)!=0)==penActive && IsWindowVisible(g_hWndLiveZoom) &&
+                    (GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED),
+                    "Erasure must preserve LiveZoom and whether the pen is active or suspended");
+            ++liveEraseCases;
+        };
+        auto protectDrawing=[&] {
+            const auto before=snapshotCanvas();
+            for(int repeat=0;repeat<3;++repeat) {
+                SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2'));
+                ++protectedLiveHotkeys;
+                const auto after=snapshotCanvas();
+                require(after.state.canvas==before.state.canvas && after.state.undoCount==before.state.undoCount &&
+                        after.state.haveDrawn==before.state.haveDrawn && after.state.zoomLevel==before.state.zoomLevel &&
+                        EqualRect(&after.state.sourceView,&before.state.sourceView) && after.mode==before.mode &&
+                        after.live==before.live && after.magnifier==before.magnifier &&
+                        after.canvasVisible==before.canvasVisible && after.liveVisible==before.liveVisible &&
+                        after.layered==before.layered && after.rgb==before.rgb,
+                        "Ctrl+2 must preserve drawing pixels, undo history, mode, view and windows");
+            }
+            ++protectedDrawCases;
+        };
+        for(int scenario=0;scenario<3;++scenario) {
+            const bool live=scenario!=0;
+            g_fullScreenWorkaround=scenario==2;
+            SetForegroundWindow(host); SetCursorPos(125,125);
+            if(live) {
+                SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(100);
+                require(IsWindowVisible(g_hWndLiveZoom),"LiveZoom must start before Ctrl+3");
+            }
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3')); pump(25);
+            require((modeState()&3)==3 && !(modeState()&4),"Ctrl+3 must activate the pen without starting a stroke");
+            require(IsWindowVisible(g_hWndMain) && (IsWindowVisible(g_hWndLiveZoom)!=FALSE)==live,
+                    "Ctrl+3 must keep LiveZoom running when drawing over a live image");
+            require(((GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED)!=0)==live,
+                    "Drawing over LiveZoom must use a transparent live overlay");
             CURSORINFO drawingCursor{sizeof(drawingCursor)};
             require(GetCursorInfo(&drawingCursor) && !(drawingCursor.flags&CURSOR_SHOWING),
-                    "Ctrl+3 must replace the arrow with the pen immediately, without waiting for mouse movement");
-            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
-            require(modeState()==11,"Repeated Draw hotkeys must not start a stroke");
-            if(exitWithEscape) SendMessage(g_hWndMain,WM_KEYDOWN,VK_ESCAPE,0);
-            else SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
-            pump(40);
-            require(!IsWindowVisible(g_hWndMain) && IsWindowVisible(g_hWndLiveZoom) && modeState()==0,
-                    "Ctrl+1 or Escape must restore LiveZoom from the frozen image");
-            require(*reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0))==originalLevel,
-                    "Restored LiveZoom must retain its original magnification");
-            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(10);
-            ++zoomOnlyTransitions; SetForegroundWindow(host);
-        }
-        for (bool fullscreen : {false,true}) {
-            g_fullScreenWorkaround=fullscreen;
-            SetCursorPos(125,125);
-            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(100);
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
-            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
+                    "Draw must hide the arrow immediately so the pen remains the only pointer");
+            protectDrawing();
+            const auto initial=canvasState();
+            SendMessage(g_hWndMain,WM_MOUSEWHEEL,MAKEWPARAM(0,WHEEL_DELTA),0);
+            SendMessage(g_hWndMain,WM_MOUSEWHEEL,MAKEWPARAM(0,-WHEEL_DELTA),0);
+            const auto wheel=canvasState();
+            require(initial.zoomLevel==1.0f && wheel.zoomLevel==1.0f && EqualRect(&initial.sourceView,&wheel.sourceView),
+                    "Draw canvas must not inherit static Zoom magnification or panning");
+            SetCursorPos(150,150); pump(5);
             SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(150,150));
-            require(modeState()==15,"Test must exit while a drawing stroke is active");
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(25);
-            require(modeState()==0 && IsWindowVisible(g_hWndLiveZoom),"Closing an active stroke must discard its drawing state");
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
-            require(modeState()==9,"A new frozen image must not inherit an old active stroke");
+            require((modeState()&7)==7 && canvasState().haveDrawn,"Test stroke must be active and stored in the canvas");
+            protectDrawing();
+            SendMessage(g_hWndMain,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(175,150));
+            SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(175,150));
+            require((modeState()&7)==3 && canvasState().undoCount>initial.undoCount,
+                    "Completed stroke must preserve the pen and an undo entry");
+            protectDrawing();
+            if(live) {
+                eraseLiveDrawing(true);
+                protectDrawing();
+                SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(150,150));
+                SendMessage(g_hWndMain,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(175,150));
+                SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(175,150));
+            }
+            SetCursorPos(175,150); pump(5);
+            SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,MAKELPARAM(175,150));
+            require((modeState()&7)==1 && canvasState().haveDrawn,"Right-click must suspend the pen while keeping the drawing");
+            protectDrawing();
+            if(live) eraseLiveDrawing(false);
             SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
-            require(modeState()==11,"Reentering Draw must wait for a new stroke");
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(15);
-            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(10);
-            ++zoomOnlyTransitions; SetForegroundWindow(host);
+            require((modeState()&7)==3 && canvasState().haveDrawn,
+                    "Ctrl+3 must reactivate the suspended pen without starting a stroke or erasing the canvas");
+            CURSORINFO reactivatedCursor{sizeof(reactivatedCursor)};
+            require(GetCursorInfo(&reactivatedCursor) && !(reactivatedCursor.flags&CURSOR_SHOWING),
+                    "Reactivating a suspended pen must hide the arrow immediately");
+            require((IsWindowVisible(g_hWndLiveZoom)!=FALSE)==live &&
+                    ((GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED)!=0)==live,
+                    "Reactivating the pen must preserve the desktop or LiveDraw session");
+            if(live) {
+                require(sampleIsBlack(),"Reactivating an erased LiveDraw canvas must retain its transparent background");
+                if(!g_fullScreenWorkaround)
+                    require(!(GetWindowLong(g_hWndLiveZoomMag,GWL_STYLE)&MS_SHOWMAGNIFIEDCURSOR),
+                            "Reactivating LiveDraw must hide the magnified pointer while the pen is visible");
+            }
+            protectDrawing();
+            SendMessage(g_hWndMain,WM_KEYDOWN,VK_ESCAPE,0); pump(30);
+            require(!IsWindowVisible(g_hWndMain),"Escape must remain available to close a protected drawing");
+            if(live) {
+                require(IsWindowVisible(g_hWndLiveZoom),"Leaving LiveDraw must preserve its running LiveZoom");
+                SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(20);
+                require(!IsWindow(g_hWndLiveZoom),"Ctrl+2 must close LiveZoom after the drawing has explicitly ended");
+            }
         }
         g_fullScreenWorkaround=false;
-        g_AnimateZoom=TRUE;
-        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
-        SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
-        require(modeState()==3,"Draw pressed during Zoom animation must activate immediately");
-        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(10);
-        ++zoomOnlyTransitions;g_AnimateZoom=FALSE;
-        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(25);
-        require(modeState()==1,"Zoom from desktop must start without Draw");
-        SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
-        require(modeState()==3,"Ctrl+3 must activate Draw in existing static Zoom");
-        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(10);
-        SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(70);
-        SendMessage(g_hWndMain,WM_COMMAND,IDC_ZOOM,0); pump(30);
-        require(modeState()==9,"Zoom from the tray menu must not activate Draw in LiveZoom");
-        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(20);
-        SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(10);
-        zoomOnlyTransitions+=2;
         SetForegroundWindow(host);
         size_t drawCycleCount=0;
         auto runCycle=[&](bool fullscreen, bool liveDraw=false, bool exitWithLiveHotkey=false) {
             ++drawCycleCount;
             g_fullScreenWorkaround=fullscreen;
-            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
-            pump(100);
+            SetCursorPos(125,125);
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(100);
             require(IsWindowVisible(g_hWndLiveZoom),"LiveZoom must start");
-            SendMessage(g_hWndMain,WM_HOTKEY,liveDraw ? LIVE_DRAW_HOTKEY : DRAW_HOTKEY,0);
-            pump(30);
+            SendMessage(g_hWndMain,WM_HOTKEY,liveDraw ? LIVE_DRAW_HOTKEY : DRAW_HOTKEY,0); pump(30);
+            require((modeState()&3)==3 && IsWindowVisible(g_hWndLiveZoom) &&
+                    (GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED),
+                    "Both Draw shortcuts must use LiveDraw while LiveZoom is active");
             SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(150,150));
             for(int x=151;x<175;++x) SendMessage(g_hWndMain,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(x,150));
             SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(175,150));
             SendMessage(g_hWndMain,WM_KEYDOWN,'T',0);
             for(wchar_t letter : std::wstring(L"Test")) SendMessage(g_hWndMain,WM_CHAR,letter,0);
             SendMessage(g_hWndMain,WM_MOUSEWHEEL,MAKEWPARAM(MK_CONTROL,WHEEL_DELTA),0);
-            if(liveDraw && exitWithLiveHotkey) {
-                SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(175,150));
-                SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(30);
-                require(!IsWindow(g_hWndLiveZoom) && !IsWindowVisible(g_hWndMain),"LiveZoom shortcut must close active LiveDraw synchronously");
-                CURSORINFO cursor{sizeof(cursor)};
-                require(GetCursorInfo(&cursor) && (cursor.flags&CURSOR_SHOWING) && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW),"Closing active LiveDraw must restore the system pointer");
-                SetForegroundWindow(host);
-                return;
-            }
-            if(liveDraw) {
-                SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(175,150));
-                SendMessage(g_hWndMain,WM_USER_EXIT_MODE,0,0);
-                pump(15);
+            SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(175,150));
+            if(exitWithLiveHotkey) {
+                const auto before=modeState();
+                SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2'));
+                require(modeState()==before && IsWindowVisible(g_hWndLiveZoom) && IsWindowVisible(g_hWndMain),
+                        "LiveZoom hotkey must preserve an active LiveDraw stroke");
+                ++protectedLiveHotkeys;
+            } else if(liveDraw) {
+                SendMessage(g_hWndMain,WM_USER_EXIT_MODE,0,0); pump(15);
                 if(!fullscreen) require(GetWindowLong(g_hWndLiveZoomMag,GWL_STYLE)&MS_SHOWMAGNIFIEDCURSOR,
-                                        "Leaving LiveDraw must restore the magnified pointer");
-                SendMessage(g_hWndMain,WM_KEYDOWN,VK_ESCAPE,0);
-            } else SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY);
-            pump(100);
-            require(IsWindowVisible(g_hWndLiveZoom),"Exiting static drawing must restore LiveZoom");
+                                        "Suspending LiveDraw must restore the magnified pointer");
+            }
+            SendMessage(g_hWndMain,WM_KEYDOWN,VK_ESCAPE,0); pump(100);
+            require(!IsWindowVisible(g_hWndMain) && IsWindowVisible(g_hWndLiveZoom),"Exiting LiveDraw must leave LiveZoom running");
             float level=*reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0));
-            require(level>1.0f,"Restored LiveZoom must retain fractional magnification");
+            require(level>1.0f,"LiveZoom must retain fractional magnification after LiveDraw");
             if(!fullscreen)
                 require(GetWindowLong(g_hWndLiveZoomMag,GWL_STYLE)&MS_SHOWMAGNIFIEDCURSOR,"Magnified cursor must be restored");
-            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
-            pump(100);
-            require(!IsWindow(g_hWndLiveZoom),"LiveZoom must close");
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(100);
+            require(!IsWindow(g_hWndLiveZoom),"LiveZoom must close after Draw has ended");
             CURSORINFO cursor{sizeof(cursor)};
-            if (!GetCursorInfo(&cursor)) { std::cerr << "GetCursorInfo error=" << GetLastError() << "\n"; throw std::runtime_error("Cannot inspect system pointer"); }
-            if (!(cursor.flags & CURSOR_SHOWING)) std::cerr << "pointer flags=" << cursor.flags << " cursor=" << cursor.hCursor << " fullscreen=" << fullscreen << "\n";
-            require((cursor.flags&CURSOR_SHOWING)!=0,"System pointer must be visible after exiting LiveZoom");
+            require(GetCursorInfo(&cursor)!=FALSE,"Inspect system pointer after LiveDraw");
+            require((cursor.flags&CURSOR_SHOWING)!=0 && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW),
+                    "System arrow must be visible after exiting LiveZoom");
             SetForegroundWindow(host);
         };
         size_t liveToggleCount = 0;
@@ -457,8 +540,12 @@ int main(int argc, char** argv) {
             wchar_t missing[]=L"Z:\\ZoomIt_missing_file_12345678.png";
             require(!LoadImageFile(missing),"Missing background image must fail cleanly");
             require(SavePng(missing,nullptr)!=ERROR_SUCCESS,"PNG failure must be reported");
-            g_AnimateZoom=FALSE;
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(100);
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3')); pump(100);
+            SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(150,150));
+            SendMessage(g_hWndMain,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(175,150));
+            SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(175,150));
+            SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,MAKELPARAM(175,150));
+            const auto snipCanvas=snapshotCanvas();
             auto snipGdi = GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
             for(int i=0;i<6;++i) {
                 cancelSnip=false;
@@ -466,14 +553,14 @@ int main(int argc, char** argv) {
                 SetTimer(nullptr,0,15,SelectTestRegion);
                 SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0);
                 BITMAP cropped{};
-                require(g_TestSnipBitmap && GetObject(g_TestSnipBitmap,sizeof(cropped),&cropped),"Snip must capture inside active zoom");
+                require(g_TestSnipBitmap && GetObject(g_TestSnipBitmap,sizeof(cropped),&cropped),"Snip must capture inside active Draw");
                 require(cropped.bmWidth==81 && cropped.bmHeight==81,"Snip crop dimensions");
                 DeleteObject(g_TestSnipBitmap); g_TestSnipBitmap=nullptr;
-                require(IsWindowVisible(g_hWndMain),"Snip must preserve pre-existing static zoom");
+                require(IsWindowVisible(g_hWndMain),"Snip must preserve the existing drawing canvas");
                 cancelSnip=true;
                 SetTimer(nullptr,0,15,SelectTestRegion);
                 SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0);
-                require(!g_TestSnipBitmap && IsWindowVisible(g_hWndMain),"Cancelled Snip must preserve static zoom");
+                require(!g_TestSnipBitmap && IsWindowVisible(g_hWndMain),"Cancelled Snip must preserve the existing drawing canvas");
                 cancelSnip=false;
                 wchar_t temporary[MAX_PATH]; GetTempPath(MAX_PATH,temporary);
                 const std::wstring imagePath=std::wstring(temporary)+L"ZoomItRegression_"+std::to_wstring(GetCurrentProcessId())+L".png";
@@ -484,26 +571,43 @@ int main(int argc, char** argv) {
                 {
                     Gdiplus::Bitmap image(imagePath.c_str());
                     require(image.GetLastStatus()==Gdiplus::Ok,"Snip PNG must be valid");
-                    require(image.GetWidth()==(i%2 ? 64 : 81) && image.GetHeight()==(i%2 ? 64 : 81),"PNG must have requested scale");
+                    require(image.GetWidth()==81 && image.GetHeight()==81,"PNG must have requested scale");
                 }
                 DeleteFile(imagePath.c_str()); g_TestSavePath=nullptr;
                 if(i==0) snipGdi=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS); // Warm selection and image codecs once.
                 require(GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)==snipGdi,"Snip copy, save and cancellation must not leak GDI objects");
+                const auto afterSnip=snapshotCanvas();
+                require(afterSnip.state.canvas==snipCanvas.state.canvas && afterSnip.state.undoCount==snipCanvas.state.undoCount &&
+                        afterSnip.state.haveDrawn && afterSnip.rgb==snipCanvas.rgb,
+                        "Snip copy, save and cancellation must retain drawing pixels and undo history");
             }
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(30);
+            SendMessage(g_hWndMain,WM_USER_CAPTURE_SESSION,0,CAPTURE_CLOSE_NOW); pump(30);
             pointerVisible();
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(100);
             cancelSnip=false; SetTimer(nullptr,0,15,SelectTestRegion);
             SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0); pump(100);
             require(g_TestSnipBitmap && IsWindowVisible(g_hWndLiveZoom),"Snip from LiveZoom must resume LiveZoom");
             DeleteObject(g_TestSnipBitmap); g_TestSnipBitmap=nullptr;
+            for(int wait=0;wait<50 && *reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0))!=1.25f;++wait) pump(10);
+            wchar_t temporary[MAX_PATH]; GetTempPath(MAX_PATH,temporary);
+            const std::wstring imagePath=std::wstring(temporary)+L"ZoomItRegressionLive_"+std::to_wstring(GetCurrentProcessId())+L".png";
+            struct LiveImageCleanup {const wchar_t* path; ~LiveImageCleanup(){DeleteFile(path);}} imageCleanup{imagePath.c_str()};
+            g_TestSavePath=imagePath.c_str(); g_TestSaveFilter=2;
+            SetTimer(nullptr,0,15,SelectTestRegion);
+            SendMessage(g_hWndMain,WM_HOTKEY,SNIP_SAVE_HOTKEY,0); pump(100);
+            {
+                Gdiplus::Bitmap image(imagePath.c_str());
+                require(image.GetLastStatus()==Gdiplus::Ok && image.GetWidth()==64 && image.GetHeight()==64,
+                        "Snip from 1.25x LiveZoom must save Actual size at source resolution");
+            }
+            DeleteFile(imagePath.c_str()); g_TestSavePath=nullptr;
+            require(IsWindowVisible(g_hWndLiveZoom),"Saving Snip from LiveZoom must resume its live view");
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(30);
             pointerVisible();
         }
         size_t displayChangeCases=0;
         for(int mode=0;mode<4;++mode) {
-            g_AnimateZoom=FALSE;
-            if(mode==0) SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
+            if(mode==0) SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
             else if(mode==1) SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
             else if(mode==2) {SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);pump(100);SendMessage(g_hWndMain,WM_HOTKEY,LIVE_DRAW_HOTKEY,0);}
             else SendMessage(g_hWndMain,WM_COMMAND,IDC_BREAK,0);
@@ -512,10 +616,10 @@ int main(int argc, char** argv) {
             require(IsWindow(g_hWndMain) && !IsWindowVisible(g_hWndMain) && !IsWindow(g_hWndLiveZoom),"Display changes must stop capture while keeping the app alive");
             pointerVisible(); ++displayChangeCases;
             SendMessage(g_hWndMain,WM_USER_END_SESSION,0,0); pump(5);
-            require(!IsWindowVisible(g_hWndMain),"Stale exit messages must not reactivate zoom");
+            require(!IsWindowVisible(g_hWndMain),"Stale exit messages must not reactivate a drawing canvas");
             SetForegroundWindow(host);
         }
-        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(100);
+        SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3')); pump(100);
         nestedDisplayChange=true; cancelSnip=false; SetTimer(nullptr,0,15,SelectTestRegion);
         SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0); pump(150);
         if(g_TestSnipBitmap){DeleteObject(g_TestSnipBitmap);g_TestSnipBitmap=nullptr;}
@@ -532,6 +636,8 @@ int main(int argc, char** argv) {
         optionsSaveHotkey=true;
         DialogBox(g_hInstance,L"OPTIONS",g_hWndMain,TestOptionsProc);
         require(g_LiveZoomToggleMod==(MOD_CONTROL|MOD_ALT),"Saving LiveZoom options must update both key and modifiers");
+        require(g_SliderZoomLevel==4,"Saving options must read initial magnification from the LiveZoom page");
+        g_SliderZoomLevel=0;
         UnregisterAllHotkeys(g_hWndMain);g_LiveZoomToggleKey=0;
         const auto topology=zoomit::ReadDisplayTopology();
         if(!snipOnly) {runCycle(false); runCycle(true); runCycle(false,true); runCycle(true,true);
@@ -539,19 +645,18 @@ int main(int argc, char** argv) {
         DialogBox(g_hInstance,L"OPTIONS",g_hWndMain,TestOptionsProc);
         g_BreakOnSecondary=false; g_BreakShowBackgroundFile=false;
         SendMessage(g_hWndMain,WM_COMMAND,IDC_BREAK,0); pump(10);
-        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,0); pump(10);
+        SendMessage(g_hWndMain,WM_USER_END_SESSION,0,0); pump(10);
         const auto gdiBaseline=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
         const auto userBaseline=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);
         const auto memoryBefore=privateBytes();
         for(int i=0;i<(snipOnly ? 0 : 12);++i) {
-            g_AnimateZoom=(i%2)!=0;
             runCycle(false); runCycle(true); runCycle(false,true); runCycle(true,true);
             runCycle(false,true,true); runCycle(true,true,true);
             DialogBox(g_hInstance,L"OPTIONS",g_hWndMain,TestOptionsProc);
             SendMessage(g_hWndMain,WM_COMMAND,IDC_BREAK,0); pump(10);
-            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,0); pump(10);
+            SendMessage(g_hWndMain,WM_USER_END_SESSION,0,0); pump(10);
         }
-        require(optionsValid,"Options must have six pages with About last and no recording or typing pages");
+        require(optionsValid,"Options must have five pages with About last and no standalone Zoom, recording or typing pages");
         const auto gdiAfter=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
         const auto userAfter=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);
         const auto memoryAfter=privateBytes();
@@ -566,12 +671,12 @@ int main(int argc, char** argv) {
         MagUninitialize();
         SetCursorPos(oldCursor.x,oldCursor.y);
         std::cout<<"{\"passed\":true,\"live_draw_cycles\":"<<drawCycleCount<<",\"undo_1080p_entries\":"<<count
-          <<",\"zoom_only_transitions\":"<<zoomOnlyTransitions
-          <<",\"live_toggle_events\":"<<liveToggleCount<<",\"effect_operations\":1200,\"effects_milliseconds\":"<<effectsMilliseconds
+          <<",\"protected_draw_cases\":"<<protectedDrawCases<<",\"protected_live_hotkeys\":"<<protectedLiveHotkeys
+          <<",\"live_erase_cases\":"<<liveEraseCases<<",\"live_toggle_events\":"<<liveToggleCount<<",\"effect_operations\":1200,\"effects_milliseconds\":"<<effectsMilliseconds
           <<",\"effect_gdi_before\":"<<effectsBefore<<",\"effect_gdi_after\":"<<effectsAfter
           <<",\"effect_private_before\":"<<effectMemoryBefore<<",\"effect_private_after\":"<<effectMemoryAfter
           <<",\"display_change_cases\":"<<displayChangeCases<<",\"active_display_paths\":"<<topology.count
-          <<",\"mirrored_desktop\":"<<(topology.mirrored()?"true":"false")<<",\"allocation_failure_cases\":3,\"capture_failure_cases\":3,\"snip_cases\":20,\"options_open_close_cycles\":"<<(snipOnly?3:15)<<",\"timer_cycles\":"<<(snipOnly?2:14)
+          <<",\"mirrored_desktop\":"<<(topology.mirrored()?"true":"false")<<",\"allocation_failure_cases\":3,\"capture_failure_cases\":3,\"snip_cases\":21,\"options_open_close_cycles\":"<<(snipOnly?3:15)<<",\"timer_cycles\":"<<(snipOnly?2:14)
           <<",\"gdi_before\":"<<gdiBaseline<<",\"gdi_after\":"<<gdiAfter
           <<",\"user_before\":"<<userBaseline<<",\"user_after\":"<<userAfter
           <<",\"private_bytes_before\":"<<memoryBefore<<",\"private_bytes_after\":"<<memoryAfter<<"}\n";

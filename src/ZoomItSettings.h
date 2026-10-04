@@ -2,7 +2,6 @@
 #include "zoomit.h"
 #include "Registry.h"
 
-DWORD	g_ToggleKey = (HOTKEYF_CONTROL << 8)| '1';
 DWORD	g_LiveZoomToggleKey = ((HOTKEYF_CONTROL) << 8)| '2';
 DWORD	g_DrawToggleKey = ((HOTKEYF_CONTROL) << 8)| '3';
 DWORD	g_BreakToggleKey = ((HOTKEYF_CONTROL) << 8)| '4';
@@ -10,7 +9,6 @@ DWORD   g_SnipToggleKey = ((HOTKEYF_CONTROL) << 8) | '5';
 
 DWORD	g_ShowExpiredTime = 1;
 DWORD	g_SliderZoomLevel = 3;
-BOOLEAN g_AnimateZoom = TRUE;
 DWORD	g_PenColor = COLOR_RED;
 DWORD	g_BreakPenColor = COLOR_RED;
 DWORD   g_RootPenWidth = PEN_WIDTH;
@@ -26,7 +24,6 @@ TCHAR	g_BreakBackgroundFile[MAX_PATH] = {0};
 BOOLEAN	g_OptionsShown = FALSE;
 BOOLEAN	g_ShowTrayIcon = TRUE;
 BOOLEAN g_SnapToGrid = TRUE;
-BOOLEAN	g_TelescopeZoomOut = TRUE;
 BOOLEAN	g_BreakOnSecondary = FALSE;
 LOGFONT	g_LogFont;
 // Divide by 100 to get actual scaling
@@ -35,7 +32,6 @@ DWORD g_SettingsSchema=0;
 
 REG_SETTING RegSettings[] = {
     {L"SettingsSchema",SETTING_TYPE_DWORD,0,&g_SettingsSchema,0},
-    { L"ToggleKey", SETTING_TYPE_DWORD, 0, &g_ToggleKey, static_cast<DOUBLE>(g_ToggleKey) },
     { L"LiveZoomToggleKey", SETTING_TYPE_DWORD, 0, &g_LiveZoomToggleKey, static_cast<DOUBLE>(g_LiveZoomToggleKey) },
     { L"DrawToggleKey", SETTING_TYPE_DWORD, 0, &g_DrawToggleKey, static_cast<DOUBLE>(g_DrawToggleKey) },
     { L"SnipToggleKey", SETTING_TYPE_DWORD, 0, &g_SnipToggleKey, static_cast<DOUBLE>(g_SnipToggleKey) },
@@ -56,8 +52,6 @@ REG_SETTING RegSettings[] = {
     { L"BreakOnSecondary", SETTING_TYPE_BOOLEAN, 0, &g_BreakOnSecondary,static_cast<DOUBLE>(g_BreakOnSecondary) },
     { L"ShowExpiredTime", SETTING_TYPE_BOOLEAN, 0, &g_ShowExpiredTime, static_cast<DOUBLE>(g_ShowExpiredTime) },
     { L"ShowTrayIcon", SETTING_TYPE_BOOLEAN, 0, &g_ShowTrayIcon, static_cast<DOUBLE>(g_ShowTrayIcon) },
-    { L"AnimnateZoom", SETTING_TYPE_BOOLEAN, 0, &g_AnimateZoom, static_cast<DOUBLE>(g_AnimateZoom) },
-    { L"TelescopeZoomOut", SETTING_TYPE_BOOLEAN, 0, &g_TelescopeZoomOut, static_cast<DOUBLE>(g_TelescopeZoomOut) },
     { L"SnapToGrid", SETTING_TYPE_BOOLEAN, 0, &g_SnapToGrid, static_cast<DOUBLE>(g_SnapToGrid) },
     { L"ZoominSliderLevel", SETTING_TYPE_DWORD, 0, &g_SliderZoomLevel, static_cast<DOUBLE>(g_SliderZoomLevel) },
     { L"Font", SETTING_TYPE_BINARY, sizeof g_LogFont, &g_LogFont, static_cast<DOUBLE>(0) },

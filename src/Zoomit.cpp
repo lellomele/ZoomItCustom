@@ -106,6 +106,7 @@ DWORD g_TestSaveFilter = 1;
 bool g_TestFailZoomAllocation = false;
 bool g_TestFailCapture = false;
 unsigned g_TestErrorCount = 0;
+constexpr UINT WM_TEST_QUERY_MODE = WM_APP + 17;
 #endif
 
 int ShowAppMessage(HWND owner, const wchar_t* text, const wchar_t* title, UINT flags) {
@@ -2422,6 +2423,7 @@ LRESULT APIENTRY MainWndProc(
     NOTIFYICONDATA	tNotifyIconData;
 
     const auto releaseSession = [&]() {
+        g_Drawing = FALSE; g_Tracing = FALSE; g_DrawingShape = 0;
         DeleteDrawUndoList(&drawUndoList);
 
         DeleteDC(hdcScreenCompat); hdcScreenCompat = nullptr;
@@ -2526,6 +2528,10 @@ LRESULT APIENTRY MainWndProc(
         wmTaskbarCreated = RegisterWindowMessage(_T("TaskbarCreated"));
         return TRUE;
 
+#ifdef ZOOMIT_TESTING
+    case WM_TEST_QUERY_MODE:
+        return (g_Zoomed ? 1 : 0) | (g_Drawing ? 2 : 0) | (g_Tracing ? 4 : 0) | (g_ZoomOnLiveZoom ? 8 : 0);
+#endif
     case WM_SYSCOMMAND:
         if (SuppressIdleCommand(wParam)) return 0;
         break;
@@ -2571,6 +2577,7 @@ LRESULT APIENTRY MainWndProc(
 
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT && g_Zoomed &&
+            (!g_ZoomOnLiveZoom || g_Drawing) &&
             (!(GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) || g_Drawing)) {
             SetCursor(nullptr);
             return TRUE;
@@ -2602,7 +2609,7 @@ LRESULT APIENTRY MainWndProc(
         switch( wParam ) {
         case LIVE_DRAW_HOTKEY:
         {
-            if (!pMagInitialize || !pMagSetWindowFilterList || !pSetLayeredWindowAttributes) break;
+            if (hWndOptions || !pMagInitialize || !pMagSetWindowFilterList || !pSetLayeredWindowAttributes) break;
             OutputDebug(L"LIVE_DRAW_HOTKEY\n");
             LONG_PTR exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
 
@@ -2634,6 +2641,7 @@ LRESULT APIENTRY MainWndProc(
             //
             // Enter drawing mode without zoom
             //
+            if (hWndOptions) break;
 
             if( !g_Zoomed ) {
                 OutputDebug(L"LiveDraw: %d (%d)\n", wParam, (wParam == LIVE_DRAW_HOTKEY));
@@ -2648,7 +2656,6 @@ LRESULT APIENTRY MainWndProc(
                     SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, wParam == LIVE_DRAW_HOTKEY ? LIVE_DRAW_ZOOM : 0 );
                     if (!g_Zoomed) break;
                     zoomLevel = zoomTelescopeTarget = 1;
-                    SendMessage( hWnd, WM_LBUTTONDOWN, 0, MAKELPARAM( cursorPos.x, cursorPos.y ));
                 }
                 if (!g_Zoomed) break;
                 if(wParam == LIVE_DRAW_HOTKEY) {
@@ -2666,7 +2673,24 @@ LRESULT APIENTRY MainWndProc(
                     // Highlight is not supported in LiveDraw
                     g_PenColor |= 0xFF << 24;
 				}
-            } 
+            }
+            // Activate the pen explicitly for Draw, including in existing static zoom.
+            if (wParam == DRAW_HOTKEY && g_Zoomed && !g_Drawing) {
+                if (zoomTelescopeStep > 1 && zoomLevel != zoomTelescopeTarget) {
+                    KillTimer(hWnd,1);
+                    zoomLevel=zoomTelescopeTarget; zoomTelescopeStep=0;
+                    InvalidateRect(hWnd,nullptr,FALSE); UpdateWindow(hWnd);
+                }
+                POINT drawingCursor{};
+                if (GetCursorPos(&drawingCursor) && ScreenToClient(hWnd,&drawingCursor)) {
+                    const LPARAM drawingPosition=MAKELPARAM(drawingCursor.x,drawingCursor.y);
+                    SendMessage(hWnd,WM_LBUTTONDOWN,0,drawingPosition);
+                    if (g_Drawing) {
+                        SetCursor(nullptr);
+                        SendMessage(hWnd,WM_MOUSEMOVE,0,drawingPosition);
+                    }
+                }
+            }
             break;
 
         case SNIP_SAVE_HOTKEY:
@@ -2965,8 +2989,8 @@ LRESULT APIENTRY MainWndProc(
                     //
                     if( IsWindowVisible( g_hWndLiveZoom )) {
 
-                        // Enter drawing mode
-                        OutputDebug(L"Enter liveZoom draw\n");
+                        // Freeze the LiveZoom image; the Draw command activates the pen separately.
+                        OutputDebug(L"Freeze liveZoom\n");
                         g_LiveZoomSourceRect = *reinterpret_cast<RECT *>(SendMessage( g_hWndLiveZoom, WM_USER_GET_SOURCE_RECT, 0, 0 ));
                         g_LiveZoomLevel = *reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom, WM_USER_GET_ZOOM_LEVEL, 0, 0));
                         
@@ -2981,7 +3005,7 @@ LRESULT APIENTRY MainWndProc(
                         UpdateWindow( hWnd ); // overwrites where cursor erased
                         if( lParam != SHALLOW_ZOOM )
                         {
-                            // Put the drawing cursor where the magnified cursor was
+                            // Keep the pointer at its visible position in the frozen image
                             OutputDebug(L"Setting cursor\n");
 
                             if (lParam != LIVE_DRAW_ZOOM)
@@ -2989,7 +3013,6 @@ LRESULT APIENTRY MainWndProc(
                                 cursorPos = ScalePointInRects( cursorPos, g_LiveZoomSourceRect, monInfo.rcMonitor );
                                 SetCursorPos( cursorPos.x, cursorPos.y );
                                 UpdateWindow( hWnd ); // overwrites where cursor erased
-                                SendMessage( hWnd, WM_LBUTTONDOWN, 0, MAKELPARAM( cursorPos.x, cursorPos.y ));
                             }
                         }
                         else

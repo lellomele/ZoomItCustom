@@ -108,7 +108,9 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
         wchar_t copyright[256]{}, version[64]{};
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
-        optionsValid &= wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr && wcsstr(version,L"1.2.0.0")!=nullptr;
+        const char* expectedAsciiVersion=FILE_VERSION_STRING;
+        const std::wstring expectedVersion(expectedAsciiVersion,expectedAsciiVersion+strlen(expectedAsciiVersion));
+        optionsValid &= wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr && wcsstr(version,expectedVersion.c_str())!=nullptr;
         SetTimer(dialog, 97, 35, nullptr);
     }
     return result;
@@ -308,6 +310,77 @@ int main(int argc, char** argv) {
             require(g_TestErrorCount==errors+3,"Copy failures must be reported once per operation");
             SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(5);
         }
+        size_t zoomOnlyTransitions=0;
+        auto modeState=[&]{return SendMessage(g_hWndMain,WM_TEST_QUERY_MODE,0,0);};
+        for (bool fullscreen : {false,true}) for (bool exitWithEscape : {false,true}) {
+            g_fullScreenWorkaround=fullscreen;
+            SetCursorPos(125,125);
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(70);
+            require(IsWindowVisible(g_hWndLiveZoom),"LiveZoom must start before Zoom transition");
+            for (int wait=0;wait<50 && *reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0))!=g_ZoomLevels[g_SliderZoomLevel];++wait) pump(10);
+            const float originalLevel=*reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0));
+            require(originalLevel==g_ZoomLevels[g_SliderZoomLevel],"Initial LiveZoom animation must settle before comparing restored levels");
+            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(25);
+            require(IsWindowVisible(g_hWndMain) && !IsWindowVisible(g_hWndLiveZoom) && modeState()==9,
+                    "Ctrl+2 then Ctrl+1 must freeze LiveZoom without activating Draw or a stroke");
+            SendMessage(g_hWndMain,WM_SETCURSOR,reinterpret_cast<WPARAM>(g_hWndMain),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+            CURSORINFO frozenCursor{sizeof(frozenCursor)};
+            require(GetCursorInfo(&frozenCursor) && (frozenCursor.flags&CURSOR_SHOWING) &&
+                    frozenCursor.hCursor==LoadCursor(nullptr,IDC_ARROW),"Frozen LiveZoom must keep a visible arrow before Draw");
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3')); pump(10);
+            require(modeState()==11,"Ctrl+3 must activate Draw in an existing frozen LiveZoom image");
+            CURSORINFO drawingCursor{sizeof(drawingCursor)};
+            require(GetCursorInfo(&drawingCursor) && !(drawingCursor.flags&CURSOR_SHOWING),
+                    "Ctrl+3 must replace the arrow with the pen immediately, without waiting for mouse movement");
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
+            require(modeState()==11,"Repeated Draw hotkeys must not start a stroke");
+            if(exitWithEscape) SendMessage(g_hWndMain,WM_KEYDOWN,VK_ESCAPE,0);
+            else SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
+            pump(40);
+            require(!IsWindowVisible(g_hWndMain) && IsWindowVisible(g_hWndLiveZoom) && modeState()==0,
+                    "Ctrl+1 or Escape must restore LiveZoom from the frozen image");
+            require(*reinterpret_cast<float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0))==originalLevel,
+                    "Restored LiveZoom must retain its original magnification");
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,MAKELPARAM(MOD_CONTROL,'2')); pump(10);
+            ++zoomOnlyTransitions; SetForegroundWindow(host);
+        }
+        for (bool fullscreen : {false,true}) {
+            g_fullScreenWorkaround=fullscreen;
+            SetCursorPos(125,125);
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(100);
+            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
+            SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(150,150));
+            require(modeState()==15,"Test must exit while a drawing stroke is active");
+            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(25);
+            require(modeState()==0 && IsWindowVisible(g_hWndLiveZoom),"Closing an active stroke must discard its drawing state");
+            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
+            require(modeState()==9,"A new frozen image must not inherit an old active stroke");
+            SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
+            require(modeState()==11,"Reentering Draw must wait for a new stroke");
+            SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(15);
+            SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(10);
+            ++zoomOnlyTransitions; SetForegroundWindow(host);
+        }
+        g_fullScreenWorkaround=false;
+        g_AnimateZoom=TRUE;
+        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1'));
+        SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
+        require(modeState()==3,"Draw pressed during Zoom animation must activate immediately");
+        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(10);
+        ++zoomOnlyTransitions;g_AnimateZoom=FALSE;
+        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,MAKELPARAM(MOD_CONTROL,'1')); pump(25);
+        require(modeState()==1,"Zoom from desktop must start without Draw");
+        SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL,'3'));
+        require(modeState()==3,"Ctrl+3 must activate Draw in existing static Zoom");
+        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(10);
+        SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(70);
+        SendMessage(g_hWndMain,WM_COMMAND,IDC_ZOOM,0); pump(30);
+        require(modeState()==9,"Zoom from the tray menu must not activate Draw in LiveZoom");
+        SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(20);
+        SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(10);
+        zoomOnlyTransitions+=2;
+        SetForegroundWindow(host);
         size_t drawCycleCount=0;
         auto runCycle=[&](bool fullscreen, bool liveDraw=false, bool exitWithLiveHotkey=false) {
             ++drawCycleCount;
@@ -493,6 +566,7 @@ int main(int argc, char** argv) {
         MagUninitialize();
         SetCursorPos(oldCursor.x,oldCursor.y);
         std::cout<<"{\"passed\":true,\"live_draw_cycles\":"<<drawCycleCount<<",\"undo_1080p_entries\":"<<count
+          <<",\"zoom_only_transitions\":"<<zoomOnlyTransitions
           <<",\"live_toggle_events\":"<<liveToggleCount<<",\"effect_operations\":1200,\"effects_milliseconds\":"<<effectsMilliseconds
           <<",\"effect_gdi_before\":"<<effectsBefore<<",\"effect_gdi_after\":"<<effectsAfter
           <<",\"effect_private_before\":"<<effectMemoryBefore<<",\"effect_private_after\":"<<effectMemoryAfter

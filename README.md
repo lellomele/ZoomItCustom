@@ -20,7 +20,7 @@ Le impostazioni sono conservate in HKEY_CURRENT_USER\Software\ZoomItCustom\ZoomI
 | Ctrl+Shift+2 | LiveDraw |
 | Ctrl+Shift+5 | Salva un ritaglio PNG |
 
-In LiveZoom, Ctrl+Su e Ctrl+Giù regolano l'ingrandimento. Ctrl+3 passa al disegno statico; Esc torna a LiveZoom. Ctrl+2 chiude LiveZoom e l'eventuale LiveDraw attivo. La chiusura di LiveZoom è immediata.
+In LiveZoom, Ctrl+Su e Ctrl+Giù regolano l'ingrandimento. Ctrl+1 congela l'immagine ingrandita senza attivare il disegno; un altro Ctrl+1 o Esc torna a LiveZoom. Ctrl+3 attiva il disegno, anche nello zoom statico già aperto; Esc torna a LiveZoom quando il disegno è stato avviato da questa modalità. Ctrl+2 chiude LiveZoom e l'eventuale LiveDraw attivo. La chiusura di LiveZoom è immediata.
 
 Nel disegno, Ctrl+Z annulla, E cancella le annotazioni e il pulsante destro torna alla visualizzazione senza disegno. Esc termina la modalità. Nel timer, le frecce regolano la durata ed Esc termina la pausa. Le scorciatoie e le altre opzioni si configurano dal menu dell'icona nell'area di notifica.
 

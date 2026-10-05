@@ -1,77 +1,87 @@
 # ZoomIt Custom
 
-Applicazione portatile per Windows per ingrandire lo schermo, disegnare e mostrare un timer. Include LiveZoom, LiveDraw e ritagli PNG. Registrazione video/audio, Type e DemoType sono state rimosse.
+[Italiano](README.it.md)
 
-## Installazione
+ZoomIt Custom is a portable Windows app for screen magnification, drawing, a break timer and screen snips. The Custom edition was created to address longstanding ZoomIt bugs, especially the disappearing mouse pointer after transitions between LiveZoom and drawing, and to improve robustness, responsiveness and memory use.
 
-Scaricare [il pacchetto portatile o l’eseguibile dalla pagina delle release](https://github.com/lellomele/ZoomItCustom/releases/latest). Estrarre il pacchetto portatile. Avviare ZoomItCustom.exe per l'uso normale, oppure ZoomItCustomSupervisor.exe per abilitare anche il recupero automatico dopo un crash. I due eseguibili devono restare nella stessa cartella. Chiudere eventuali altre istanze di ZoomIt che utilizzano le stesse scorciatoie.
+Video/audio recording, Type and DemoType are excluded to keep the app focused on these everyday tools.
 
-Le impostazioni sono conservate in HKEY_CURRENT_USER\Software\ZoomItCustom\ZoomIt Custom; l'avvio automatico usa la voce ZoomIt Custom. Al primo avvio dopo l’aggiornamento dalla precedente mappatura, le cinque scorciatoie vengono impostate come indicato sotto; le successive personalizzazioni vengono conservate.
+## Get started
 
-Nelle opzioni, **Avvio automatico (all'accesso a Windows)** offre tre scelte: Disattivato, Avvia ZoomIt Custom con Windows e Avvia ZoomIt Custom con supervisore. Confermare con OK; Cancel conserva la configurazione precedente. La scelta vale dal prossimo accesso a Windows e non cambia la sessione corrente, indicata come supervisione attiva o esecuzione autonoma. L'avvio supervisionato apre il supervisore, che avvia l'app. Se manca il supervisore nella stessa cartella, la relativa scelta viene disabilitata. Spostando la cartella, riconfermare la scelta nelle opzioni per aggiornare il percorso. Se Windows ha disabilitato l'avvio dalle impostazioni delle app di avvio, riabilitarlo anche lì.
+Download and extract a [portable package from Releases](https://github.com/lellomele/ZoomItCustom/releases) containing both executables. If a package with the supervisor is not yet available, follow the build instructions below. Keep the two executables in the same folder and close other ZoomIt instances that use the same shortcuts.
 
-## Uso
-
-| Scorciatoia iniziale | Funzione |
+| What you want | What to launch |
 | --- | --- |
-| Ctrl+1 | Zoom statico |
+| Use the app with its internal protections | ZoomItCustom.exe |
+| Also restart automatically after a crash | ZoomItCustomSupervisor.exe |
+
+The **supervisor** starts ZoomIt Custom for you and stays in the background. Launch it once; there is no need to open the app separately. If the app is already running on its own, exit it first, then launch the supervisor. Exit ZoomIt Custom from its notification-area menu to close both.
+
+After a crash, the supervisor restarts the app and tries to restore the last valid state: mode, magnification, drawing colour and completed annotations. Drawing returns paused; left-click to continue. The unfinished stroke and undo history cannot be restored. If recovery is unavailable, the app returns to the desktop. A second crash within a minute causes a restart on the desktop; a third stops automatic restarts.
+
+When launched directly, the app still has its internal protections, but you must reopen it yourself after a crash.
+
+## Start with Windows
+
+Open the options from the notification-area icon. Under **Avvio automatico (all'accesso a Windows)**, choose:
+
+- **Disattivato**: start manually.
+- **Avvia ZoomIt Custom con Windows**: start the app without the supervisor.
+- **Avvia ZoomIt Custom con supervisore**: start the supervisor, which opens and supervises the app.
+
+Confirm with **OK**. The choice applies at your next Windows sign-in; it does not change the current session. The options show whether the current session is supervised. The supervisor choice is unavailable if its executable is missing from the app's folder.
+
+If you move the folder, confirm the choice again to update the startup location. If Windows has disabled the app under Startup apps, enable it there too.
+
+## Everyday use
+
+Shortcuts can be changed in the options.
+
+| Default shortcut | Action |
+| --- | --- |
+| Ctrl+1 | Static Zoom |
 | Ctrl+2 | LiveZoom |
-| Ctrl+3 | Disegno |
-| Ctrl+4 | Pausa con timer |
-| Ctrl+5 | Snip: copia un ritaglio |
+| Ctrl+3 | Draw |
+| Ctrl+4 | Break timer |
+| Ctrl+5 | Copy a snip |
 | Ctrl+Shift+2 | LiveDraw |
-| Ctrl+Shift+5 | Salva un ritaglio PNG |
+| Ctrl+Shift+5 | Save a PNG snip |
 
-In LiveZoom, Ctrl+Su e Ctrl+Giù regolano l'ingrandimento. Il comando Zoom (inizialmente Ctrl+1) viene ignorato mentre LiveZoom è attivo. Ctrl+3 passa al disegno statico; Esc torna a LiveZoom. Ctrl+2 chiude LiveZoom e l'eventuale LiveDraw attivo. La chiusura di LiveZoom è immediata.
+Static Zoom freezes the enlarged image. LiveZoom updates it in real time; LiveDraw lets you draw over that live view.
 
-Nel disegno, Ctrl+Z annulla ed E cancella le annotazioni. Il primo clic destro sospende il disegno: il pointer diventa un piccolo cerchio con bordo del colore attivo e interno scuro. Spostare il mouse non aggiunge tratti. Il clic sinistro ripristina il pointer precedente e permette di continuare dal punto indicato; il secondo clic destro esce dalla modalità Draw. Esc termina la modalità. Nel timer, le frecce regolano la durata ed Esc termina la pausa. Le scorciatoie e le altre opzioni si configurano dal menu dell'icona nell'area di notifica.
+In LiveZoom, **Ctrl+Up / Ctrl+Down** adjust magnification. **Ctrl+1 is ignored** while LiveZoom is active. **Ctrl+3** switches to drawing on a frozen image; **Esc** returns to LiveZoom. **Ctrl+2** closes LiveZoom and any active LiveDraw.
 
-Snip funziona anche nello zoom statico già attivo e ne mantiene la visualizzazione dopo il ritaglio o l'annullamento. Cattura ciò che appare ingrandito sullo schermo, comprese le annotazioni. Nel salvataggio, scegliere Zoomed PNG per mantenere la dimensione visibile oppure Actual size PNG per ridurla secondo il fattore di zoom. Partendo da LiveZoom, il ritaglio blocca temporaneamente l'immagine e poi ripristina LiveZoom. Snip è disabilitato quando LiveZoom e LiveDraw sono attivi contemporaneamente.
+In Draw, **Ctrl+Z** undoes and **E** clears annotations. The first **right-click** pauses drawing and shows a small ring in the active colour with a dark centre. Moving the mouse adds no strokes. **Left-click** resumes drawing; a second **right-click** exits Draw. **Esc** also ends the mode. In the timer, arrow keys adjust the duration and **Esc** ends the break.
 
-## Protezione e recupero
+Snip also works in static Zoom, including annotations. With LiveZoom it temporarily freezes the image, then restores the live view. Snip is unavailable while LiveDraw is active. When saving, choose **Zoomed PNG** for the displayed size or **Actual size PNG** to remove the magnification.
 
-Le protezioni interne sono sempre attive. Gli errori grafici o le eccezioni gestibili interrompono l'operazione e, quando necessario, riportano l'applicazione al desktop con il cursore visibile.
+## If something goes wrong
 
-Il supervisore è opzionale e si chiude quando si esce normalmente dall'applicazione. Dopo un crash riavvia ZoomIt Custom e tenta di ripristinare l'ultimo stato completato valido, conservato in memoria. Ripristina modalità, ingrandimento, colore e annotazioni; il disegno riparte sospeso e si riprende con il clic sinistro. Il tratto in corso e la cronologia degli annullamenti non vengono ripristinati. Se l'ultimo checkpoint è danneggiato, prova quello precedente; se il monitor è cambiato o il ripristino non è possibile, riparte sul desktop.
+Reports are created **only for crashes or serious errors**, never during normal use. To find them, paste the following path into File Explorer or the Windows Run dialog:
 
-Al secondo crash entro un minuto, il riavvio avviene sul desktop; al terzo il supervisore si ferma. L'applicazione avviata direttamente registra i crash intercettabili e richiede una riapertura manuale. Il recupero non copre un riavvio o lo spegnimento di Windows.
+    %LOCALAPPDATA%\ZoomItCustom\Logs
 
-I rapporti vengono creati **solo per crash o errori gravi**, in `%LOCALAPPDATA%\ZoomItCustom\Logs`, con ripiego su `%TEMP%\ZoomItCustom-Logs` se la cartella non è scrivibile. Contengono versione, operazione, modalità, errore e informazioni sui monitor; quando possibile viene prodotto anche un minidump `.dmp`. Vengono mantenuti fino a otto rapporti con i relativi dump. Per l'analisi del dump usare i simboli `.pdb` della medesima compilazione, disponibili nel pacchetto di diagnostica; non sono necessari per usare l'applicazione.
+If that folder is not writable, the fallback is **%TEMP%\ZoomItCustom-Logs**. The text report describes the operation and error; a diagnostic dump may accompany it.
 
-Nell'uso supervisionato, due copie delle immagini consentono il recupero: la memoria viene impegnata al bisogno, fino a 64 MiB per copia (128 MiB complessivi). Il puntatore in movimento non provoca copie continue dello schermo; le immagini vengono salvate in memoria al completamento delle operazioni. Oltre 64 MiB per immagine il recupero delle annotazioni non è disponibile.
+## Requirements and limits
 
-## Requisiti e limiti
+- Updated 64-bit Windows 10 or Windows 11. No separate C++ runtime installation is needed. The executables are unsigned.
+- Memory use grows with screen resolution. Undo history is limited to control its footprint. Optional supervised recovery can use up to 128 MiB for saved images; annotations cannot be recovered from images larger than 64 MiB each.
+- Recovery covers app crashes, not an app that remains running but stops responding, or a Windows restart/shutdown.
+- The second-screen timer requires an extended desktop. With duplicated screens it stays on the current monitor. A display change or resume from sleep may end the active mode; activate it again to continue.
+- LiveZoom is unavailable on Windows Server 2022 and Windows 11 21H2 builds older than revision 829. Use an updated Windows version.
+- Mixed-DPI monitors, Remote Desktop, touch and pen are not guaranteed to work correctly.
 
-Windows 10 o Windows 11 aggiornati, a 64 bit. L'eseguibile non è firmato digitalmente. Non occorre installare il runtime C++.
+## Build from source
 
-La cronologia del disegno conserva fino a 32 immagini, con un budget indicativo di 64 MiB: fino a 8 immagini Full HD o 2 immagini 4K. Conserva sempre almeno un annullamento, anche se una singola immagine supera il budget. Le immagini necessarie al disegno e allo zoom richiedono ulteriore memoria, proporzionale alla risoluzione.
-
-Il percorso LiveZoom per Windows Server 2022 e Windows 11 21H2 prima della revisione 829 richiede privilegi UIAccess. In questa distribuzione portatile tali privilegi non sono disponibili: LiveZoom viene disabilitato su queste build e le opzioni mostrano un avviso. Usare una versione aggiornata di Windows 10/11. Il requisito è documentato da [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/magnification/nf-magnification-magsetinputtransform).
-
-Il timer sul secondo schermo usa un monitor già presente in modalità estesa. Con gli schermi duplicati resta sul monitor corrente e non modifica la configurazione di Windows. In caso di cambiamento della geometria del desktop o di ripresa dalla sospensione, le modalità attive possono essere chiuse per ricreare le risorse al comando successivo.
-
-Il corretto funzionamento con più monitor a DPI differenti, desktop remoto, touch e penna non è garantito.
-
-## Compilazione
-
-Installare Visual Studio 2022 o successivo con gli strumenti C++, Windows SDK e CMake per Windows. Dalla cartella dei sorgenti:
+Install Visual Studio 2022 or later with C++ tools, Windows SDK and CMake. From the source folder, run:
 
     .\build.ps1
 
-I risultati sono build-Release\ZoomItCustom.exe e build-Release\ZoomItCustomSupervisor.exe. Per la versione Debug usare:
+The two executables are created in **build-Release**.
 
-    .\build.ps1 -Configuration Debug
+## Copyright and licence
 
-Per eseguire anche le prove sul desktop:
+Based on the [Microsoft PowerToys ZoomIt sources](https://github.com/microsoft/PowerToys/tree/21fd5092b3e062ca6c8dd6b8c772a236f90b3b42/src/modules/ZoomIt/ZoomIt).
 
-    .\build.ps1 -RunTests
-
-Queste prove mostrano temporaneamente zoom e finestre dell'applicazione.
-
-La scheda About, dopo Snip, riporta versione, autore, origine e licenza. Il numero di versione compare nella barra del titolo delle opzioni. L'icona è integrata nell'eseguibile e nelle finestre. I sorgenti grafici e le dimensioni di distribuzione sono in assets; generate-icon.ps1 rigenera PNG e ICO; con -Supervisor genera le risorse dell'icona del supervisore.
-
-## Origine e copyright
-
-Derivato dai sorgenti Microsoft PowerToys che integrano ZoomIt 9.0, commit [21fd5092b3e062ca6c8dd6b8c772a236f90b3b42](https://github.com/microsoft/PowerToys/tree/21fd5092b3e062ca6c8dd6b8c772a236f90b3b42/src/modules/ZoomIt/ZoomIt). Questa versione non è una ricompilazione dei sorgenti originali di ZoomIt 6.12.
-
-Modifiche della versione Custom: copyright (C) 2026 Prof. ing. Raffaele Mele. Codice originale: copyright Mark Russinovich / Microsoft Corporation. Licenza MIT: vedere LICENSE. Per redistribuire i sorgenti o l'eseguibile derivato, conservare la licenza e gli avvisi di copyright. L'eseguibile originale Sysinternals 6.12 non è incluso nei pacchetti.
+Custom modifications: copyright © 2026 Prof. ing. Raffaele Mele. Original code: Mark Russinovich / Microsoft Corporation. Distributed under the [MIT licence](LICENSE); preserve the licence and copyright notices when redistributing.

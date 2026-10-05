@@ -181,13 +181,15 @@ typedef UINT (__stdcall *type_pGetDpiForWindow)(
 class ComputerGraphicsInit
 {
     ULONG_PTR	m_Token{};
+    Gdiplus::Status m_Status{Gdiplus::GenericError};
 public:
     ComputerGraphicsInit()
     {
         Gdiplus::GdiplusStartupOutput	startupOut;
         Gdiplus::GdiplusStartupInput	startupIn;
-        Gdiplus::GdiplusStartup( &m_Token, &startupIn, &startupOut );
+        m_Status = Gdiplus::GdiplusStartup( &m_Token, &startupIn, &startupOut );
     }
+    bool Ready() const noexcept { return m_Status == Gdiplus::Ok; }
     ~ComputerGraphicsInit()
     {
         if(m_Token) Gdiplus::GdiplusShutdown(m_Token);

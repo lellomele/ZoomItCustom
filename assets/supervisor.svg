@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>ZoomIt Custom Supervisor: recupero automatico</title>
+  <circle cx="128" cy="128" r="124" fill="#1369B5"/>
+  <circle cx="110.5" cy="106.5" r="63.5" fill="#45D9D0" stroke="#fff" stroke-width="15"/>
+  <path d="M158 154 L206 202" fill="none" stroke="#fff" stroke-width="25" stroke-linecap="round"/>
+  <path d="M73 130 L135 69" fill="none" stroke="#FFCE47" stroke-width="15"/>
+  <path d="M62 143 L68 118 L88 137 Z" fill="#fff"/>
+<path d="M155 164 L199 147 L243 164 L236 213 L199 245 L162 213 Z" fill="#19A86B" stroke="#fff" stroke-width="8"/>
+  <path d="M177 193 L194 211 L224 179" fill="none" stroke="#fff" stroke-width="11" stroke-linecap="round"/>
+</svg>

@@ -1,3 +1,4 @@
+param([switch]$Supervisor)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Drawing
 $assetDir=Join-Path $PSScriptRoot 'assets'
@@ -21,13 +22,29 @@ foreach($size in @(16,24,32,48,64,128,256)) {
  $pen=[Drawing.Pen]::new([Drawing.ColorTranslator]::FromHtml('#FFCE47'),15)
  $graphics.DrawLine($pen,73,130,135,69)
  $graphics.FillPolygon([Drawing.Brushes]::White,[Drawing.PointF[]]@([Drawing.PointF]::new(62,143),[Drawing.PointF]::new(68,118),[Drawing.PointF]::new(88,137)))
+ if($Supervisor) {
+  $shield=[Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml('#19A86B'))
+  $outline=[Drawing.Pen]::new([Drawing.Color]::White,8)
+  $points=[Drawing.PointF[]]@([Drawing.PointF]::new(155,164),[Drawing.PointF]::new(199,147),[Drawing.PointF]::new(243,164),[Drawing.PointF]::new(236,213),[Drawing.PointF]::new(199,245),[Drawing.PointF]::new(162,213))
+  $graphics.FillPolygon($shield,$points)
+  $graphics.DrawPolygon($outline,$points)
+  $check=[Drawing.Pen]::new([Drawing.Color]::White,11)
+  $check.StartCap=[Drawing.Drawing2D.LineCap]::Round
+  $check.EndCap=[Drawing.Drawing2D.LineCap]::Round
+  $graphics.DrawLines($check,[Drawing.PointF[]]@([Drawing.PointF]::new(177,193),[Drawing.PointF]::new(194,211),[Drawing.PointF]::new(224,179)))
+  $check.Dispose()
+  $outline.Dispose()
+  $shield.Dispose()
+ }
  $stream=[IO.MemoryStream]::new()
  $bitmap.Save($stream,[Drawing.Imaging.ImageFormat]::Png)
  $frames.Add($stream.ToArray())
- $bitmap.Save((Join-Path $assetDir "icon-$size.png"),[Drawing.Imaging.ImageFormat]::Png)
+ $imageName=if($Supervisor){"supervisor-$size.png"}else{"icon-$size.png"}
+ $bitmap.Save((Join-Path $assetDir $imageName),[Drawing.Imaging.ImageFormat]::Png)
  $stream.Dispose();$pen.Dispose();$handle.Dispose();$rim.Dispose();$glass.Dispose();$brush.Dispose();$graphics.Dispose();$bitmap.Dispose()
 }
-$file=[IO.File]::Create((Join-Path $assetDir 'appicon.ico'))
+$iconName=if($Supervisor){'supervisor.ico'}else{'appicon.ico'}
+$file=[IO.File]::Create((Join-Path $assetDir $iconName))
 $writer=[IO.BinaryWriter]::new($file)
 $writer.Write([uint16]0);$writer.Write([uint16]1);$writer.Write([uint16]$frames.Count)
 $offset=6+16*$frames.Count

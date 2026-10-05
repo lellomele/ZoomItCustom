@@ -23,6 +23,13 @@ size_t privateBytes() {
     return counters.PrivateUsage;
 }
 bool systemCursorShown = true;
+bool denyInputTransform = false;
+// The privileged fullscreen input transform is simulated for state-machine tests.
+// Native window magnification uses the real APIs; a separate case exercises access denial.
+BOOL WINAPI TestInputTransform(BOOL enabled, RECT*, RECT*) {
+    if (enabled && denyInputTransform) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    return TRUE;
+}
 BOOL WINAPI TestShowSystemCursor(BOOL show) {
     const BOOL result=MagShowSystemCursor(show);
     if(result) systemCursorShown=show!=FALSE;
@@ -73,16 +80,22 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
         for (auto& page : g_OptionsTabs) optionsValid &= IsWindow(page.hPage) != FALSE;
         wchar_t title[128]{}, version[64]{}, copyright[256]{}, lastTab[32]{};
         GetWindowText(dialog,title,_countof(title));
-        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.2")==0;
+        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.4")==0;
         TCITEM item{};item.mask=TCIF_TEXT;item.pszText=lastTab;item.cchTextMax=_countof(lastTab);
         TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),ABOUT_PAGE,&item);
         optionsValid &= wcscmp(lastTab,L"About")==0;
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
-        optionsValid &= wcscmp(version,L"Version 1.1.2")==0 &&
+        optionsValid &= wcscmp(version,L"Version 1.1.4")==0 &&
                         wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr;
         optionsValid &= IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_REPOSITORY)) &&
                         IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_LICENSE));
+        wchar_t supervision[96]{};
+        GetDlgItemTextW(dialog,IDC_SUPERVISION_STATUS,supervision,_countof(supervision));
+        optionsValid &= wcscmp(supervision,L"Sessione: esecuzione autonoma")==0 &&
+            IsWindow(GetDlgItem(dialog,IDC_STARTUP_OFF)) &&
+            IsWindow(GetDlgItem(dialog,IDC_STARTUP_NORMAL)) &&
+            IsWindow(GetDlgItem(dialog,IDC_STARTUP_SUPERVISED));
         SetTimer(dialog, 97, 35, nullptr);
     }
     return result;
@@ -92,8 +105,17 @@ int main(int argc, char** argv) {
     const bool snipOnly = argc>1 && strcmp(argv[1],"--snip-only")==0;
     std::wstring capturePath;
     if(argc>2) {capturePath=std::filesystem::absolute(argv[2]).wstring();aboutCapturePath=capturePath.c_str();}
+    else {
+        wchar_t image[MAX_PATH]{};
+        if(GetEnvironmentVariableW(L"ZOOMIT_TEST_OPTIONS_CAPTURE",image,MAX_PATH)) {
+            capturePath=std::filesystem::absolute(image).wstring();aboutCapturePath=capturePath.c_str();
+        }
+    }
     POINT oldCursor{}; GetCursorPos(&oldCursor);
     try {
+        const auto logFolder = std::filesystem::current_path() / ("regression-errors-" + std::to_string(GetCurrentProcessId()));
+        std::filesystem::create_directories(logFolder);
+        SetEnvironmentVariableW(L"ZOOMIT_TEST_LOG_DIRECTORY", logFolder.c_str());
         require(g_ToggleKey==((HOTKEYF_CONTROL<<8)|'1') &&
                 g_LiveZoomToggleKey==((HOTKEYF_CONTROL<<8)|'2') &&
                 g_DrawToggleKey==((HOTKEYF_CONTROL<<8)|'3') &&
@@ -206,7 +228,7 @@ int main(int argc, char** argv) {
         pMagSetWindowTransform=MagSetWindowTransform;
         pMagSetWindowFilterList=MagSetWindowFilterList;
         pMagSetFullscreenTransform=MagSetFullscreenTransform;
-        pMagSetInputTransform=MagSetInputTransform;
+        pMagSetInputTransform=TestInputTransform;
         pMagShowSystemCursor=TestShowSystemCursor;
         pSetLayeredWindowAttributes=SetLayeredWindowAttributes;
         pGetMonitorInfo=GetMonitorInfoA;
@@ -296,6 +318,12 @@ int main(int argc, char** argv) {
             pump(30);require(!IsWindow(g_hWndLiveZoom),"LiveZoom must still close normally");
             SetForegroundWindow(host);
         }
+        g_fullScreenWorkaround=true;
+        denyInputTransform=true;
+        SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);pump(100);
+        require(!IsWindow(g_hWndLiveZoom) && modeState()==0 && systemCursorShown,
+                "Denied fullscreen input transform must return safely to desktop with visible cursor");
+        denyInputTransform=false;
         g_fullScreenWorkaround=false;
         size_t suspensionCases=0, suspensionCycles=0, suspendedSnipCases=0, nativeResumeCases=0;
         auto currentCanvas=[&]{return reinterpret_cast<HDC>(SendMessage(g_hWndMain,WM_TEST_QUERY_CANVAS,0,0));};
@@ -335,7 +363,7 @@ int main(int argc, char** argv) {
                         "Suspension circle border must match the active drawing colour");
                 require(GetPixel(image.dc(),8,8)==RGB(240,240,240),"Cursor corners must be transparent");
                 if(savePreview && aboutCapturePath) {
-                    auto path=std::filesystem::path(aboutCapturePath).parent_path()/L"suspension-pointer-1.1.2.png";
+                    auto path=std::filesystem::path(aboutCapturePath).parent_path()/L"suspension-pointer-1.1.3.png";
                     HBITMAP imageBitmap=static_cast<HBITMAP>(GetCurrentObject(image.dc(),OBJ_BITMAP));
                     require(SavePng(const_cast<wchar_t*>(path.c_str()),imageBitmap)==ERROR_SUCCESS,"Save suspension pointer preview");
                 }

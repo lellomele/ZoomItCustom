@@ -57,7 +57,7 @@
 #define IDC_TRAY_ICON                   1042
 #define IDC_HIDE_TRAY_ICON              1042
 #define IDC_SHOW_TRAY_ICON              1042
-#define IDC_AUTOSTART                   1043
+
 #define IDC_CHECK_BACKGROUND_STRETCH    1046
 #define IDC_STATIC_DESKTOP_BACKGROUND   1047
 #define IDC_STATIC_DESKTOP_BACKGROUND   1047
@@ -102,3 +102,9 @@
 #define IDC_ABOUT_UPSTREAM              4213
 #define IDC_ABOUT_REPOSITORY            4214
 #define IDC_ABOUT_LICENSE               4215
+
+#define IDC_STARTUP_OFF                  4220
+#define IDC_STARTUP_NORMAL               4221
+#define IDC_STARTUP_SUPERVISED           4222
+#define IDC_SUPERVISION_STATUS           4223
+#define IDC_STARTUP_HINT                 4224

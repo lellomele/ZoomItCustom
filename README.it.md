@@ -2,7 +2,9 @@
 
 [English](README.md)
 
-ZoomIt Custom è un'app portatile per Windows per ingrandire lo schermo, disegnare, mostrare un timer di pausa e catturare ritagli. La versione Custom nasce per risolvere bug storici di ZoomIt, soprattutto la scomparsa del puntatore del mouse nei passaggi tra LiveZoom e disegno, e migliorare robustezza, velocità di risposta e occupazione di memoria.
+ZoomIt Custom è un'app portatile per Windows per ingrandire lo schermo, disegnare, mostrare un timer di pausa e catturare ritagli.
+
+La ragione principale di questa versione è che, nell'uso quotidiano del suo autore, ZoomIt originale era diventato «troppo»: troppa memoria occupata, troppe funzionalità, alcune lontane dallo scopo originario, e troppi passaggi per operazioni ricorrenti. A questo si aggiungevano bug storici rimasti nelle versioni successive nonostante le segnalazioni, come la scomparsa del puntatore nei passaggi tra LiveZoom e disegno. ZoomIt Custom vuole riportare l'app agli strumenti essenziali, correggere questi problemi e dare priorità a robustezza, velocità e minore occupazione di memoria.
 
 Registrazione video/audio, Type e DemoType sono escluse per concentrare l'app su questi strumenti di uso quotidiano.
 

@@ -2,7 +2,9 @@
 
 [Italiano](README.it.md)
 
-ZoomIt Custom is a portable Windows app for screen magnification, drawing, a break timer and screen snips. The Custom edition was created to address longstanding ZoomIt bugs, especially the disappearing mouse pointer after transitions between LiveZoom and drawing, and to improve robustness, responsiveness and memory use.
+ZoomIt Custom is a portable Windows app for screen magnification, drawing, a break timer and screen snips.
+
+The main reason for this edition is that, for its author's everyday use, the original ZoomIt had become too much: too much memory use, too many features, some beyond its original purpose, and too many steps for recurring operations. Longstanding bugs also persisted across successive releases despite reports, including the mouse pointer disappearing after transitions between LiveZoom and drawing. ZoomIt Custom aims to bring the app back to its essential tools, fix these problems and prioritise robustness, speed and a smaller memory footprint.
 
 Video/audio recording, Type and DemoType are excluded to keep the app focused on these everyday tools.
 

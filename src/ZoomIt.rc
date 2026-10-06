@@ -179,8 +179,8 @@ BEGIN
     LTEXT           "1.25x",IDC_STATIC,52,126,28,8
     RTEXT           "4.00x",IDC_STATIC,185,126,28,8
     LTEXT           "0.25x steps up to 4x; then 8x, 16x and 32x.",IDC_STATIC,7,144,246,10
-    CONTROL         "Show zoom factor briefly (Zoom and LiveZoom)",IDC_SHOW_ZOOM_INDICATOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,162,246,10
-    LTEXT           "Large translucent text on the main screen for 1.2 seconds. Hidden during drawing and screen snips.",IDC_STATIC,7,178,246,18
+    CONTROL         "Show zoom factor (Zoom and LiveZoom)",IDC_SHOW_ZOOM_INDICATOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,162,246,10
+    LTEXT           "Brief display; stays faintly visible at 1x in LiveZoom. Hidden during drawing, snips and options.",IDC_STATIC,7,178,246,18
     CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,74,116,10
     LTEXT           "Ctrl+C / Ctrl+S: copy / save. Ctrl+Shift+C / Ctrl+Shift+S: copy / save a region. Draw and LiveDraw hotkeys are ignored in Zoom.",IDC_STATIC,7,34,246,17
 END
@@ -232,7 +232,7 @@ STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     LTEXT           "LiveZoom mode is supported on updated Windows 10 and Windows 11 where window updates show while zoomed. ",IDC_STATIC,7,7,246,18
-    LTEXT           "Ctrl+Up / Ctrl+Down or Ctrl+mouse wheel adjust zoom. Draw (Ctrl+3 by default) freezes the view; Escape returns to LiveZoom. The Zoom hotkey is ignored.",IDC_STATIC,7,30,246,27
+    LTEXT           "Ctrl+Up / Ctrl+Down or Ctrl+mouse wheel adjust zoom. Esc exits LiveZoom; during drawing it returns to LiveZoom. Draw freezes the view. The Zoom hotkey is ignored.",IDC_STATIC,7,30,246,27
     LTEXT           "LiveDraw keeps the view live: use Draw + Shift (Ctrl+Shift+3 by default; see Draw tab). Escape ends drawing. Zoom, LiveZoom and timer hotkeys are ignored during Draw or LiveDraw, even when paused.",IDC_STATIC,7,62,246,32
     CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_LIVE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,99,116,10
     LTEXT           "Smoothly magnify on entry and return to normal size on exit. Unchecked: change instantly.",IDC_STATIC,7,113,246,18

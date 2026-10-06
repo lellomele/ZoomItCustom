@@ -19,21 +19,37 @@ static bool ValidRect(RECT r) noexcept {
     const int64_t w=static_cast<int64_t>(r.right)-r.left,h=static_cast<int64_t>(r.bottom)-r.top;
     return w>0 && h>0 && w<=32768 && h<=32768;
 }
-bool ValidState(const State& state) noexcept {
-    State copy=state;copy.checksum=0;
-    if(!state.sequence || Hash(&copy,sizeof(copy))!=state.checksum || state.mode>Mode::Break ||
+static bool ValidFields(const State& state) noexcept {
+    if(state.mode>Mode::Break ||
        !std::isfinite(state.zoom)||!std::isfinite(state.liveZoom)||state.zoom<1||state.zoom>32||
        state.liveZoom<1||state.liveZoom>32||state.penWidth<1||state.penWidth>600||
        state.rootPenWidth<1||state.rootPenWidth>40)return false;
     if(state.mode!=Mode::Idle && !ValidRect(state.monitor))return false;
+    if(state.liveActive>1||state.pointerArrow>1)return false;
+    if(state.liveActive||state.mode==Mode::LiveZoom||state.mode==Mode::FrozenLiveDraw){
+        if(!ValidRect(state.source)||state.source.left<state.monitor.left||state.source.top<state.monitor.top||
+           state.source.right>state.monitor.right||state.source.bottom>state.monitor.bottom)return false;
+    }
+    if(!state.canvasSequence&&(state.canvasSlot!=-1||state.canvasWidth||state.canvasHeight))return false;
     if(state.canvasSequence && (state.canvasSlot<0||state.canvasSlot>1||!state.canvasWidth||
        !state.canvasHeight||state.canvasWidth>32768||state.canvasHeight>32768||
        static_cast<size_t>(state.canvasWidth)*state.canvasHeight*4>CanvasCapacity))return false;
     return true;
 }
+bool ValidState(const State& state) noexcept {
+    if(!state.sequence)return false;State copy=state;copy.checksum=0;
+    return Hash(&copy,sizeof(copy))==state.checksum&&ValidFields(state);
+}
 bool Latest(const Shared& shared,State& state) noexcept {
     const State a=shared.states[0],b=shared.states[1];const bool va=ValidState(a),vb=ValidState(b);
     if(!va&&!vb)return false;state=!vb||(va&&a.sequence>b.sequence)?a:b;return true;
+}
+static bool RecoveryLatest(const Shared& shared,State& state)noexcept{
+    State best{};Latest(shared,best);
+    // A complete image pair can outlive a crash in the final rolling-metadata publication.
+    for(const CanvasCheckpoint& checkpoint:shared.canvases)
+        if(ValidState(checkpoint.state)&&checkpoint.state.sequence>best.sequence)best=checkpoint.state;
+    if(!best.sequence)return false;state=best;return true;
 }
 bool ValidToken(const wchar_t* token) noexcept {
     if(!token||wcslen(token)!=36)return false;
@@ -115,11 +131,11 @@ bool WriteReport(const Diagnostics& diagnostic,const Crash* crash,HANDLE process
         static_cast<unsigned long long>(diagnostic.wordParam),GetSystemMetrics(SM_CMONITORS),
         GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN),
         GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),outcome);
-    if(!WriteText(file,text)){CloseHandle(file);return false;}
-    FlushFileBuffers(file);
+    if(!WriteText(file,text)){CloseHandle(file);DeleteFileW(path);return false;}
+    bool complete=true;
     if(crash){
         StringCchPrintfW(text,4096,L"Eccezione: 0x%08lX; indirizzo: 0x%llX; thread: %lu\r\n",
-            crash->code,static_cast<unsigned long long>(crash->address),crash->thread);WriteText(file,text);
+            crash->code,static_cast<unsigned long long>(crash->address),crash->thread);complete=WriteText(file,text)&&complete;
         if(process){
             wchar_t dumpPath[MAX_PATH];StringCchCopyW(dumpPath,MAX_PATH,path);
             if(auto ext=wcsrchr(dumpPath,L'.'))wcscpy_s(ext,5,L".dmp");
@@ -133,10 +149,12 @@ bool WriteReport(const Diagnostics& diagnostic,const Crash* crash,HANDLE process
                     snapshot.record.ExceptionCode?&info:nullptr,nullptr,nullptr);
                 if(!dumped)dumpError=GetLastError();CloseHandle(dump);if(!dumped)DeleteFileW(dumpPath);
             }else dumpError=GetLastError();
-            StringCchPrintfW(text,4096,L"Minidump: %s; errore: 0x%08lX\r\n",dumped?dumpPath:L"non disponibile",dumpError);WriteText(file,text);
-        }else WriteText(file,L"Minidump: processo gia terminato; rapporto basato sul codice di uscita.\r\n");
+            StringCchPrintfW(text,4096,L"Minidump: %s; errore: 0x%08lX\r\n",dumped?dumpPath:L"non disponibile",dumpError);complete=WriteText(file,text)&&complete;
+        }else complete=WriteText(file,L"Minidump: processo gia terminato; rapporto basato sul codice di uscita.\r\n")&&complete;
     }
-    FlushFileBuffers(file);CloseHandle(file);PruneReports(folder);return true;
+    complete=FlushFileBuffers(file)!=FALSE&&complete;CloseHandle(file);
+    if(!complete){DeleteFileW(path);if(auto ext=wcsrchr(path,L'.')){wcscpy_s(ext,5,L".dmp");DeleteFileW(path);}return false;}
+    PruneReports(folder);return true;
 }
 void RestoreSystem(SystemState& state) noexcept {
     if(state.stickyChanged&&SystemParametersInfoW(SPI_SETSTICKYKEYS,sizeof(STICKYKEYS),&state.sticky,SPIF_SENDCHANGE))
@@ -187,8 +205,13 @@ bool Client::Initialize(const wchar_t* commandLine) noexcept {
             }
             if(valid){
                 attached_=true;shared_->diagnostic=diagnostic_;State previous{};
-                if(Latest(*shared_,previous)){
+                if(RecoveryLatest(*shared_,previous)){
                     stateSequence_=previous.sequence;canvasSequence_=previous.canvasSequence;canvasSlot_=previous.canvasSlot;
+                    canvasSerial_=previous.canvasSequence;
+                    for(const CanvasCheckpoint& checkpoint:shared_->canvases)
+                        canvasSerial_=(std::max)(canvasSerial_,checkpoint.image.sequence);
+                    for(const State& rolling:shared_->states)
+                        if(ValidState(rolling))canvasSerial_=(std::max)(canvasSerial_,rolling.canvasSequence);
                     canvasWidth_=previous.canvasWidth;canvasHeight_=previous.canvasHeight;
                     if(recovering_&&!safe_)pending_=previous;
                 }else recovering_=false;
@@ -208,13 +231,15 @@ bool Client::TakeRecovery(State& state)noexcept{
         return true;
     };
     if(!pending_.canvasSequence||CanvasValid(pending_))return accept(pending_);
-    // A torn or corrupt latest image must not destroy the previous valid checkpoint.
-    for(const State& previous:shared_->states){
+    // Metadata can roll over both current-state slots; each complete image retains its own state.
+    State best{};
+    const auto candidate=[&](const State& previous) noexcept {
         if(previous.sequence<pending_.sequence&&ValidState(previous)&&
-           (!previous.canvasSequence||CanvasValid(previous))){
-            return accept(previous);
-        }
-    }
+           (!previous.canvasSequence||CanvasValid(previous))&&previous.sequence>best.sequence)best=previous;
+    };
+    for(const State& previous:shared_->states)candidate(previous);
+    for(const CanvasCheckpoint& previous:shared_->canvases)candidate(previous.state);
+    if(best.sequence)return accept(best);
     Serious(L"Checkpoint di recupero non valido; avvio sul desktop",ERROR_INVALID_DATA);
     return false;
 }
@@ -242,39 +267,118 @@ LONG Client::Fault(EXCEPTION_POINTERS* pointers)noexcept{
     return EXCEPTION_EXECUTE_HANDLER;
 }
 void Client::NormalExit()noexcept{if(shared_&&attached_)InterlockedExchange(&shared_->normalExit,1);}
+void Client::CheckpointFailure(DWORD condition,const wchar_t* operation,DWORD error)noexcept{
+    if(checkpointFailures_&condition)return;
+    checkpointFailures_|=condition;Serious(operation,error);
+}
+#if defined(ZOOMIT_RECOVERY_TESTING) || defined(ZOOMIT_TESTING)
+bool Client::Fail(TestFailure failure)noexcept{
+    if(testFailure_!=failure)return false;
+    testFailure_=TestFailure::None;SetLastError(ERROR_GEN_FAILURE);return true;
+}
+void Client::PrepareRecoveryForTest()noexcept{
+    recovering_=shared_&&RecoveryLatest(*shared_,pending_);safe_=false;
+}
+#define RECOVERY_FAIL(name) Fail(TestFailure::name)
+#else
+#define RECOVERY_FAIL(name) false
+#endif
 void Client::Commit(State state,HDC canvas,HDC cursorPatch,const RECT* cursorRect,bool copyCanvas)noexcept{
     diagnostic_.mode=state.mode;diagnostic_.zoom=state.zoom;
     if(shared_)shared_->diagnostic=diagnostic_;
     if(!attached_||recovering_)return;
-    if(copyCanvas&&canvas){
-        const int w=state.monitor.right-state.monitor.left,h=state.monitor.bottom-state.monitor.top;
-        if(w<=0||h<=0||static_cast<size_t>(w)*h*4>CanvasCapacity){Serious(L"Dimensione checkpoint grafico",ERROR_NOT_ENOUGH_MEMORY);return;}
-        const LONG slot=canvasSlot_==0?1:0;BYTE* data=pixels_+static_cast<size_t>(slot)*CanvasCapacity;
+    if(previousMode_==Mode::Idle&&state.mode!=Mode::Idle)checkpointFailures_=0;
+    previousMode_=state.mode;
+    const bool imageMode=state.mode==Mode::Zoom||state.mode==Mode::Draw||
+        state.mode==Mode::LiveDraw||state.mode==Mode::FrozenLiveDraw;
+    // Validate geometry and scalars before overwriting the inactive image slot.
+    state.canvasSlot=-1;state.canvasSequence=state.canvasWidth=state.canvasHeight=0;
+    state.sequence=stateSequence_+1;state.checksum=0;
+    if(!ValidFields(state)){CheckpointFailure(1,L"Validazione stato di recupero",ERROR_INVALID_DATA);return;}
+    const auto publish=[&](State value) noexcept {
+        value.sequence=++stateSequence_;value.checksum=0;value.checksum=Hash(&value,sizeof(value));
+        const DWORD index=value.sequence%2;
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&shared_->states[index].sequence),0);
+        State unpublished=value;unpublished.sequence=0;shared_->states[index]=unpublished;MemoryBarrier();
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&shared_->states[index].sequence),value.sequence);
+        return value;
+    };
+    const auto safeWithoutCanvas=[&]() noexcept {
+        // An oversize/new surface can keep running normally, but cannot claim a restorable image.
+        if(!canvasSequence_){State idle{};idle.color=state.color;idle.penWidth=state.penWidth;
+            idle.rootPenWidth=state.rootPenWidth;publish(idle);}
+    };
+    bool captured=false;LONG newSlot=canvasSlot_;DWORD newSequence=canvasSequence_;
+    DWORD newWidth=canvasWidth_,newHeight=canvasHeight_,newHash=0;
+    if(copyCanvas&&imageMode){
+        const int64_t width=static_cast<int64_t>(state.monitor.right)-state.monitor.left;
+        const int64_t height=static_cast<int64_t>(state.monitor.bottom)-state.monitor.top;
+        if(!canvas||width<=0||height<=0||static_cast<uint64_t>(width)*height*4>CanvasCapacity){
+            CheckpointFailure(2,L"Dimensione checkpoint grafico",canvas?ERROR_NOT_ENOUGH_MEMORY:ERROR_INVALID_HANDLE);
+            safeWithoutCanvas();return;
+        }
+        const int w=static_cast<int>(width),h=static_cast<int>(height);
+        newSlot=canvasSlot_==0?1:0;BYTE* data=pixels_+static_cast<size_t>(newSlot)*CanvasCapacity;
         const size_t bytes=static_cast<size_t>(w)*h*4;
-        if(!VirtualAlloc(data,bytes,MEM_COMMIT,PAGE_READWRITE)){Serious(L"Memoria checkpoint",GetLastError());return;}
+        if(RECOVERY_FAIL(Allocation)||!VirtualAlloc(data,bytes,MEM_COMMIT,PAGE_READWRITE)){
+            CheckpointFailure(4,L"Memoria checkpoint",GetLastError());safeWithoutCanvas();return;
+        }
+        // From this point the inactive image might be partial; never expose its old associated state.
+        shared_->canvases[newSlot].state.sequence=0;shared_->canvases[newSlot].image.sequence=0;MemoryBarrier();
         BITMAPINFO info{};info.bmiHeader={sizeof(BITMAPINFOHEADER),w,-h,1,32,BI_RGB};void* dibPixels{};
-        HDC dc=CreateCompatibleDC(canvas);
-        HBITMAP bitmap=CreateDIBSection(canvas,&info,DIB_RGB_COLORS,&dibPixels,canvasMap_,static_cast<DWORD>(slot*CanvasCapacity));
-        HGDIOBJ old=dc&&bitmap?SelectObject(dc,bitmap):nullptr;
-        bool ok=dc&&bitmap&&old&&old!=HGDI_ERROR&&BitBlt(dc,0,0,w,h,canvas,0,0,SRCCOPY);
-        if(ok&&cursorPatch&&cursorRect)ok=BitBlt(dc,cursorRect->left,cursorRect->top,
-            cursorRect->right-cursorRect->left,cursorRect->bottom-cursorRect->top,cursorPatch,0,0,SRCCOPY)!=FALSE;
-        GdiFlush();if(old&&old!=HGDI_ERROR)SelectObject(dc,old);if(dc)DeleteDC(dc);if(bitmap)DeleteObject(bitmap);
-        if(!ok){Serious(L"Copia checkpoint grafico",ERROR_GEN_FAILURE);return;}
-        const DWORD sequence=++canvasSequence_;
-        shared_->canvases[slot]={sequence,static_cast<DWORD>(w),static_cast<DWORD>(h),Hash(data,bytes)};
-        canvasSlot_=slot;canvasWidth_=w;canvasHeight_=h;
+        HDC dc=RECOVERY_FAIL(CreateDC)?nullptr:CreateCompatibleDC(canvas);
+        HBITMAP bitmap=!dc||RECOVERY_FAIL(CreateBitmap)?nullptr:CreateDIBSection(canvas,&info,DIB_RGB_COLORS,
+            &dibPixels,canvasMap_,static_cast<DWORD>(newSlot*CanvasCapacity));
+        HGDIOBJ old=dc&&bitmap&&!RECOVERY_FAIL(SelectBitmap)?SelectObject(dc,bitmap):nullptr;
+        bool ok=dc&&bitmap&&old&&old!=HGDI_ERROR&&!RECOVERY_FAIL(Capture)&&
+            BitBlt(dc,0,0,w,h,canvas,0,0,SRCCOPY);
+        if(ok&&cursorPatch&&cursorRect){
+            const int64_t patchWidth=static_cast<int64_t>(cursorRect->right)-cursorRect->left;
+            const int64_t patchHeight=static_cast<int64_t>(cursorRect->bottom)-cursorRect->top;
+            ok=patchWidth>0&&patchHeight>0&&patchWidth<=32768&&patchHeight<=32768&&
+                !RECOVERY_FAIL(Patch)&&BitBlt(dc,cursorRect->left,cursorRect->top,
+                    static_cast<int>(patchWidth),static_cast<int>(patchHeight),cursorPatch,0,0,SRCCOPY)!=FALSE;
+        }
+        const bool flushed=GdiFlush()!=FALSE&&!RECOVERY_FAIL(Flush);
+        if(old&&old!=HGDI_ERROR)SelectObject(dc,old);if(dc)DeleteDC(dc);if(bitmap)DeleteObject(bitmap);
+        if(!ok||!flushed){CheckpointFailure(!flushed?16:8,!flushed?L"Sincronizzazione checkpoint grafico":
+            L"Copia checkpoint grafico",ERROR_GEN_FAILURE);safeWithoutCanvas();return;}
+        newSequence=canvasSerial_+1;newWidth=w;newHeight=h;newHash=Hash(data,bytes);
+#if defined(ZOOMIT_RECOVERY_TESTING) || defined(ZOOMIT_TESTING)
+        ++statistics_.canvasCopies;statistics_.hashedBytes+=bytes;
+#endif
+        if(RECOVERY_FAIL(Publication)){
+            CheckpointFailure(32,L"Pubblicazione checkpoint grafico",ERROR_GEN_FAILURE);safeWithoutCanvas();return;
+        }
+        captured=true;
     }
-    if(state.mode==Mode::Zoom||state.mode==Mode::Draw||state.mode==Mode::LiveDraw||state.mode==Mode::FrozenLiveDraw){
-        state.canvasSlot=canvasSlot_;state.canvasSequence=canvasSequence_;state.canvasWidth=canvasWidth_;state.canvasHeight=canvasHeight_;
-    }else{state.canvasSlot=-1;state.canvasSequence=0;state.canvasWidth=state.canvasHeight=0;}
-    state.sequence=++stateSequence_;state.checksum=0;state.checksum=Hash(&state,sizeof(state));
-    if(!ValidState(state)){Serious(L"Validazione stato di recupero",ERROR_INVALID_DATA);return;}
-    const DWORD index=state.sequence%2;shared_->states[index].sequence=0;MemoryBarrier();shared_->states[index]=state;MemoryBarrier();
+    if(imageMode&&newSequence&&newWidth==static_cast<DWORD>(state.monitor.right-state.monitor.left)&&
+       newHeight==static_cast<DWORD>(state.monitor.bottom-state.monitor.top)){
+        state.canvasSlot=newSlot;state.canvasSequence=newSequence;state.canvasWidth=newWidth;state.canvasHeight=newHeight;
+    }else if(imageMode){
+        // Never publish an active image mode with absent or incompatible image data.
+        state.mode=Mode::Idle;state.liveActive=0;state.zoom=state.liveZoom=1;state.source={};
+    }
+    if(!ValidFields(state)){CheckpointFailure(1,L"Validazione stato di recupero",ERROR_INVALID_DATA);return;}
+    if(captured){
+        // The complete image and its state are independently usable if a crash interrupts metadata publication.
+        CanvasCheckpoint checkpoint{{newSequence,newWidth,newHeight,newHash},state};
+        checkpoint.state.sequence=stateSequence_+1;checkpoint.state.checksum=0;
+        checkpoint.state.checksum=Hash(&checkpoint.state,sizeof(checkpoint.state));
+        const DWORD completed=checkpoint.state.sequence;checkpoint.state.sequence=0;
+        shared_->canvases[newSlot]=checkpoint;MemoryBarrier();
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&shared_->canvases[newSlot].state.sequence),completed);
+        canvasSlot_=newSlot;canvasSequence_=canvasSerial_=newSequence;canvasWidth_=newWidth;canvasHeight_=newHeight;
+    }
+    publish(state);
+#if defined(ZOOMIT_RECOVERY_TESTING) || defined(ZOOMIT_TESTING)
+    if(!captured)++statistics_.metadataCommits;
+#endif
 }
+#undef RECOVERY_FAIL
 bool Client::CanvasValid(const State& state)const noexcept{
     if(!attached_||!state.canvasSequence||!ValidState(state))return false;
-    const auto info=shared_->canvases[state.canvasSlot];
+    const auto info=shared_->canvases[state.canvasSlot].image;
     if(info.sequence!=state.canvasSequence||info.width!=state.canvasWidth||info.height!=state.canvasHeight)return false;
     const BYTE* data=pixels_+static_cast<size_t>(state.canvasSlot)*CanvasCapacity;
     const size_t bytes=static_cast<size_t>(state.canvasWidth)*state.canvasHeight*4;
@@ -285,6 +389,8 @@ bool Client::RestoreCanvas(const State& state,HDC destination)noexcept{
     if(!destination||!CanvasValid(state))return false;
     const BYTE* data=pixels_+static_cast<size_t>(state.canvasSlot)*CanvasCapacity;
     BITMAPINFO bitmap{};bitmap.bmiHeader={sizeof(BITMAPINFOHEADER),static_cast<LONG>(state.canvasWidth),-static_cast<LONG>(state.canvasHeight),1,32,BI_RGB};
-    return SetDIBitsToDevice(destination,0,0,state.canvasWidth,state.canvasHeight,0,0,0,state.canvasHeight,data,&bitmap,DIB_RGB_COLORS)==static_cast<int>(state.canvasHeight);
+    const bool copied=SetDIBitsToDevice(destination,0,0,state.canvasWidth,state.canvasHeight,0,0,0,
+        state.canvasHeight,data,&bitmap,DIB_RGB_COLORS)==static_cast<int>(state.canvasHeight);
+    return GdiFlush()!=FALSE&&copied;
 }
 }

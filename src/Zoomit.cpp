@@ -19,6 +19,7 @@
 #include "SuspendedDrawCursor.h"
 #include "Recovery.h"
 #include "GraphicsSession.h"
+#include "RuntimeSafety.h"
 #include "Startup.h"
 #include "LiveZoomWheel.h"
 #include "ZoomIndicator.h"
@@ -185,12 +186,15 @@ type_pSHQueryUserNotificationState	pSHQueryUserNotificationState;
 
 
 // Preserve both exclusions whenever Draw switches its canvas into or out of LiveZoom.
+std::uint64_t g_LiveSessionGeneration = 0;
+std::uint64_t g_FailedLiveGeneration = 0;
+
 BOOL SetLiveZoomFilter(HWND canvas,bool excludeCanvas) noexcept {
     if(!pMagSetWindowFilterList || !IsWindow(g_hWndLiveZoomMag))return FALSE;
     HWND excluded[2]{};int count=0;
     if(excludeCanvas && IsWindow(canvas))excluded[count++]=canvas;
     if(IsWindow(g_ZoomIndicator.Window()))excluded[count++]=g_ZoomIndicator.Window();
-    return pMagSetWindowFilterList(g_hWndLiveZoomMag,MW_FILTERMODE_EXCLUDE,count,count ? excluded : nullptr);
+    return zoomit::runtime::Permit(zoomit::runtime::Api::Filter) && pMagSetWindowFilterList(g_hWndLiveZoomMag,MW_FILTERMODE_EXCLUDE,count,count ? excluded : nullptr);
 }
 void ShowZoomIndicator(float factor,HWND context,bool live) noexcept {
     if(!g_ShowZoomIndicator || g_ZoomIndicator.Failed() || g_IndicatorSuppression || hWndOptions || g_SelectionActive ||
@@ -207,7 +211,7 @@ void ShowZoomIndicator(float factor,HWND context,bool live) noexcept {
     }
     DWORD error=g_ZoomIndicator.Ensure();
     if(!error && IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(g_hWndMain,true))error=ERROR_GEN_FAILURE;
-    if(!error)error=g_ZoomIndicator.Show(factor,primary.rcMonitor,GetDpiForWindowHelper(context));
+    if(!error)error=g_ZoomIndicator.Show(factor,primary.rcMonitor,GetDpiForWindowHelper(context),live && factor==1.0f);
     if(error){g_ZoomIndicator.Fail();recovery::client.Serious(L"Visualizzazione fattore di zoom",error);}
 }
 
@@ -802,37 +806,51 @@ void ScaleImage( HDC hdcDst, float xDst, float yDst, float wDst, float hDst,
 // GetEncoderClsid
 //
 //----------------------------------------------------------------------------
-int GetEncoderClsid(const WCHAR* format, CLSID* pClsid)
+int GetEncoderClsid(const WCHAR* format, CLSID* output)
 {
-   UINT  num = 0;          // number of image encoders
-   UINT  size = 0;         // size of the image encoder array in bytes
-using namespace Gdiplus;
-
-   ImageCodecInfo* pImageCodecInfo = NULL;
-
-   GetImageEncodersSize(&num, &size);
-   if(size == 0)
-      return -1;  // Failure
-
-   pImageCodecInfo = static_cast<ImageCodecInfo*>(malloc(size));
-   if(pImageCodecInfo == NULL)
-      return -1;  // Failure
-
-   GetImageEncoders(num, size, pImageCodecInfo);
-
-   for(UINT j = 0; j < num; ++j)
-   {
-      if( wcscmp(pImageCodecInfo[j].MimeType, format) == 0 )
-      {
-         *pClsid = pImageCodecInfo[j].Clsid;
-         free(pImageCodecInfo);
-         return j;  // Success
-      }    
-   }
-
-   free(pImageCodecInfo);
-   return -1;  // Failure
+    UINT count{}, bytes{};
+    if (!format || !output || !zoomit::runtime::Permit(zoomit::runtime::Api::Encoder) ||
+        Gdiplus::GetImageEncodersSize(&count, &bytes) != Gdiplus::Ok || !count ||
+        bytes < count * sizeof(Gdiplus::ImageCodecInfo)) return -1;
+    std::unique_ptr<BYTE[]> storage(new(std::nothrow) BYTE[bytes]);
+    if (!storage || !zoomit::runtime::Permit(zoomit::runtime::Api::Encoder) ||
+        Gdiplus::GetImageEncoders(count, bytes, reinterpret_cast<Gdiplus::ImageCodecInfo*>(storage.get())) != Gdiplus::Ok) return -1;
+    const auto codecs = reinterpret_cast<const Gdiplus::ImageCodecInfo*>(storage.get());
+    for (UINT index=0;index<count;++index) if (codecs[index].MimeType && wcscmp(codecs[index].MimeType, format)==0) {
+        *output = codecs[index].Clsid; return static_cast<int>(index);
+    }
+    return -1;
 }
+
+// Local capture ownership survives cancellation, nested dialogs and C++ exceptions.
+class CapturedBitmap {
+    HDC dc_{}; HBITMAP image_{};
+public:
+    ~CapturedBitmap() { if(dc_)DeleteDC(dc_);if(image_)DeleteObject(image_); }
+    CapturedBitmap()=default;
+    CapturedBitmap(const CapturedBitmap&)=delete;
+    CapturedBitmap& operator=(const CapturedBitmap&)=delete;
+    void Reset() noexcept {if(dc_)DeleteDC(dc_);dc_=nullptr;if(image_)DeleteObject(image_);image_=nullptr;}
+    HBITMAP Image() const noexcept {return image_;}
+    HDC Dc() const noexcept {return dc_;}
+    HBITMAP ReadyImage() noexcept {if(dc_)DeleteDC(dc_);dc_=nullptr;return image_;}
+    HBITMAP ReleaseImage() noexcept {if(dc_)DeleteDC(dc_);dc_=nullptr;return std::exchange(image_,nullptr);}
+    bool Capture(HDC source,int x,int y,int sourceWidth,int sourceHeight,int width,int height) noexcept {
+        Reset();
+        if(!source || sourceWidth<=0 || sourceHeight<=0 || width<=0 || height<=0 || width>32768 || height>32768 ||
+            static_cast<uint64_t>(width)*height*4>512ull*1024*1024) return false;
+        if(!zoomit::runtime::Permit(zoomit::runtime::Api::Capture))return false;
+        dc_=CreateCompatibleDC(source);
+        if(!dc_ || !zoomit::runtime::Permit(zoomit::runtime::Api::Capture))return false;
+        image_=CreateCompatibleBitmap(source,width,height);
+        if(!image_ || !zoomit::runtime::Permit(zoomit::runtime::Api::Capture))return false;
+        const auto old=SelectObject(dc_,image_);
+        if(!old || old==HGDI_ERROR || !zoomit::runtime::Permit(zoomit::runtime::Api::Capture))return false;
+        if(!SetStretchBltMode(dc_,HALFTONE) || !SetBrushOrgEx(dc_,0,0,nullptr) ||
+            !StretchBlt(dc_,0,0,width,height,source,x,y,sourceWidth,sourceHeight,SRCCOPY|CAPTUREBLT))return false;
+        return zoomit::runtime::Permit(zoomit::runtime::Api::Flush) && GdiFlush()!=FALSE;
+    }
+};
 
 //----------------------------------------------------------------------
 //  
@@ -880,11 +898,20 @@ HBITMAP LoadImageFile(PTCHAR filename)
 DWORD SavePng(PTCHAR filename, HBITMAP bitmapHandle)
 {
     if (!bitmapHandle) return ERROR_NOT_ENOUGH_MEMORY;
+    if (!filename || !*filename) return ERROR_INVALID_PARAMETER;
     Gdiplus::Bitmap bitmap(bitmapHandle, nullptr);
-    CLSID pngClsid{};
-    if (bitmap.GetLastStatus() != Gdiplus::Ok || GetEncoderClsid(L"image/png", &pngClsid) < 0)
-        return ERROR_INVALID_DATA;
-    return bitmap.Save(filename, &pngClsid, nullptr) == Gdiplus::Ok ? ERROR_SUCCESS : ERROR_WRITE_FAULT;
+    CLSID encoder{};
+    if (bitmap.GetLastStatus()!=Gdiplus::Ok || GetEncoderClsid(L"image/png", &encoder)<0) return ERROR_INVALID_DATA;
+    wchar_t absolute[MAX_PATH]{}, folder[MAX_PATH]{}, temporary[MAX_PATH]{};
+    const DWORD length=GetFullPathNameW(filename,MAX_PATH,absolute,nullptr);
+    if(!length)return GetLastError();
+    if(length>=MAX_PATH)return ERROR_FILENAME_EXCED_RANGE;
+    wcscpy_s(folder,absolute);
+    if(!PathRemoveFileSpecW(folder) || !GetTempFileNameW(folder,L"ZIC",0,temporary))return GetLastError();
+    const auto cleanup=zoomit::OnExit([&]{DeleteFileW(temporary);});
+    if(!zoomit::runtime::Permit(zoomit::runtime::Api::Encoder) || bitmap.Save(temporary,&encoder,nullptr)!=Gdiplus::Ok) return ERROR_WRITE_FAULT;
+    // Replacement occurs only after a complete PNG has been encoded in the destination directory.
+    return MoveFileExW(temporary,absolute,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH) ? ERROR_SUCCESS : GetLastError();
 }
 
 //----------------------------------------------------------------------------
@@ -1771,8 +1798,8 @@ BOOLEAN PopDrawUndo( HDC hDc, P_DRAW_UNDO *DrawUndoList,
     nextUndo = *DrawUndoList;
     if( nextUndo ) {
 
-        BitBlt( hDc, 0, 0, width, height, 
-            nextUndo->hDc, 0, 0, SRCCOPY|CAPTUREBLT );
+        if (!zoomit::runtime::Permit(zoomit::runtime::Api::Capture) ||
+            !BitBlt(hDc, 0, 0, width, height, nextUndo->hDc, 0, 0, SRCCOPY|CAPTUREBLT) || !GdiFlush()) return FALSE;
         *DrawUndoList = nextUndo->Next;
         DeleteDC( nextUndo->hDc );
         DeleteObject( nextUndo->hBitmap );
@@ -2005,8 +2032,8 @@ void DrawArrow( HDC hdc, int x1, int y1, int x2, int y2, double length, double w
         HBRUSH hOldBrush = SelectBrush(hdc, hBrush);
         Polygon(hdc, pts, sizeof(pts) / sizeof(pts[0]));
 
-        DeleteObject(hBrush);
         SelectObject(hdc, hOldBrush);
+        DeleteObject(hBrush);
     }
 }
 
@@ -2413,7 +2440,7 @@ bool UpdateMonitorInfo(POINT point, MONITORINFO* output) noexcept
     MONITORINFO next{sizeof(MONITORINFO)};
     const HMONITOR monitor = pMonitorFromPoint ? pMonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) :
         MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-    const BOOL found = monitor && (pGetMonitorInfo ? pGetMonitorInfo(monitor, &next) : GetMonitorInfo(monitor, &next));
+    const BOOL found = zoomit::runtime::Permit(zoomit::runtime::Api::Monitor) && monitor && (pGetMonitorInfo ? pGetMonitorInfo(monitor, &next) : GetMonitorInfo(monitor, &next));
     if (!found ||
         next.rcMonitor.right <= next.rcMonitor.left || next.rcMonitor.bottom <= next.rcMonitor.top) {
         return false;
@@ -2488,6 +2515,10 @@ LRESULT APIENTRY MainWndProcImpl(
     static unsigned captureOperationDepth = 0;
     static std::uint64_t sessionGeneration = 0;
     static zoomit::SuspendedDrawCursor suspendedCursor;
+    static zoomit::runtime::SessionTimers<4> timers;
+    static bool canvasDirty = false;
+    static UINT32 activePointerId = 0;
+    static unsigned intentionalCaptureRelease = 0;
     static HWND		g_ActiveWindow = NULL;
     static int		breakTimeout;
     static HBITMAP	g_hBackgroundBmp = NULL;
@@ -2525,7 +2556,11 @@ LRESULT APIENTRY MainWndProcImpl(
     const auto endSuspension = [&](bool resumeDraw = false) {
         if (!drawingSuspended) return;
         drawingSuspended = false;
-        if (GetCapture() == hWnd) ReleaseCapture();
+        if (GetCapture() == hWnd) {
+            ++intentionalCaptureRelease;
+            const auto releaseGuard = zoomit::OnExit([&] { --intentionalCaptureRelease; });
+            ReleaseCapture();
+        }
         SetCursor(nullptr);
         // LiveZoom normally displays its magnified pointer without a second hardware pointer.
         if (pMagShowSystemCursor)
@@ -2534,6 +2569,7 @@ LRESULT APIENTRY MainWndProcImpl(
 
     const auto releaseSession = [&]() {
         ++sessionGeneration;
+        timers.StopAll(); canvasDirty = false; activePointerId = 0;
         endSuspension();
         suspendedCursor.Reset();
         DeleteDrawUndoList(&drawUndoList);
@@ -2554,7 +2590,7 @@ LRESULT APIENTRY MainWndProcImpl(
     const auto resetToIdle = [&]() {
         g_ZoomIndicator.BeginSession();
         g_LiveZoomWheel.SetTarget(nullptr,0,0);
-        KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3);
+        timers.StopAll();
         endSuspension();
         if (IsWindow(g_hWndLiveZoom)) DestroyWindow(g_hWndLiveZoom);
         EnableDisableStickyKeys(TRUE); EnableDisableScreenSaver(TRUE);
@@ -2589,19 +2625,21 @@ LRESULT APIENTRY MainWndProcImpl(
             } else if (GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) state.mode = recovery::Mode::LiveDraw;
         } else if (IsWindowVisible(g_hWndLiveZoom)) state.mode = recovery::Mode::LiveZoom;
         if (IsWindowVisible(g_hWndLiveZoom)) {
-            auto level = reinterpret_cast<const float*>(SendMessage(g_hWndLiveZoom, WM_USER_GET_ZOOM_LEVEL, 0, 0));
-            auto source = reinterpret_cast<const RECT*>(SendMessage(g_hWndLiveZoom, WM_USER_GET_SOURCE_RECT, 0, 0));
-            if (level && source) {
-                state.liveActive = 1; state.liveZoom = *level; state.source = *source;
-                if (!g_Zoomed) { state.zoom = *level; GetCursorPos(&state.view); UpdateMonitorInfo(state.view, &monInfo); state.monitor = monInfo.rcMonitor; }
+            LiveViewport viewport{};
+            if (!SendMessage(g_hWndLiveZoom, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&viewport))) return;
+            {
+                state.liveActive = 1; state.liveZoom = viewport.factor; state.source = viewport.source;
+                if (!g_Zoomed) { state.zoom = viewport.factor; state.view = viewport.pointer; state.monitor = viewport.monitor; }
             }
         }
         const int cursorSize = g_PenWidth + 2 + CURSOR_ARM_LENGTH * 2;
         RECT pointerRect{prevPt.x - static_cast<LONG>((g_PenWidth + 2) / 2) - 4,
                          prevPt.y - static_cast<LONG>((g_PenWidth + 2) / 2) - 4, 0, 0};
         pointerRect.right = pointerRect.left + cursorSize; pointerRect.bottom = pointerRect.top + cursorSize;
+        recovery::client.SetSession(sessionGeneration);
         recovery::client.Commit(state, g_Zoomed ? hdcScreenCompat : nullptr,
-            g_Drawing ? hdcScreenCursorCompat : nullptr, g_Drawing ? &pointerRect : nullptr, copyCanvas);
+            g_Drawing ? hdcScreenCursorCompat : nullptr, g_Drawing ? &pointerRect : nullptr, copyCanvas || canvasDirty);
+        canvasDirty = false;
     };
     const auto userModeAllowed = [&](WPARAM command) noexcept {
         if (hWndOptions || g_SelectionActive || g_bSaveInProgress || captureOperationDepth) return false;
@@ -2618,10 +2656,11 @@ LRESULT APIENTRY MainWndProcImpl(
     };
     const auto abandonFailedDrawingEntry = [&]() noexcept {
         if (wParam != LIVE_DRAW_HOTKEY) return;
-        KillTimer(hWnd, 3);
+        timers.Stop(static_cast<unsigned>(3));
         SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
-        if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-            SetLiveZoomFilter(hWnd,true);
+        if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,true)) {
+            recovery::client.Serious(L"Ripristino filtro LiveDraw", ERROR_GEN_FAILURE); resetToIdle(); return;
+        }
         if (IsWindowVisible(g_hWndLiveZoom))
             SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
     };
@@ -2630,21 +2669,33 @@ LRESULT APIENTRY MainWndProcImpl(
         (message==WM_COMMAND && (LOWORD(wParam)==IDC_COPY || LOWORD(wParam)==IDC_COPY_CROP ||
                                 LOWORD(wParam)==IDC_SAVE || LOWORD(wParam)==IDC_SAVE_CROP));
     if(suppressIndicator)++g_IndicatorSuppression;
-    const auto indicatorGuard=zoomit::OnExit([&]{if(suppressIndicator)--g_IndicatorSuppression;});
-    bool skipCheckpoint = false;
-    bool canvasChangedThisDispatch = false;
     static thread_local unsigned dispatchDepth = 0;
     ++dispatchDepth;
     const int exceptions = std::uncaught_exceptions();
+    const auto indicatorGuard=zoomit::OnExit([&] {
+        if(suppressIndicator)--g_IndicatorSuppression;
+        // Restore only the persistent 1x status after the outer Draw/Snip/Options
+        // transition has released its capture and suppression guards.
+        if(dispatchDepth || std::uncaught_exceptions()!=exceptions ||
+           message==WM_USER_CAN_SHOW_ZOOM_INDICATOR || !g_ShowZoomIndicator || g_ZoomIndicator.Failed() ||
+           g_ZoomIndicator.Visible() || g_IndicatorSuppression || g_Zoomed || g_Drawing || drawingSuspended ||
+           g_TimerActive || hWndOptions || g_SelectionActive || g_bSaveInProgress || captureOperationDepth ||
+           !IsWindowVisible(g_hWndLiveZoom))return;
+        const auto encoded=SendMessage(g_hWndLiveZoom,WM_USER_GET_LIVE_INDICATOR_FACTOR,0,0);
+        if(encoded)ShowZoomIndicator(DecodeZoomLevel(static_cast<WPARAM>(encoded)),g_hWndLiveZoom,true);
+    });
+    bool skipCheckpoint = false;
+    bool canvasChangedThisDispatch = false;
     const auto checkpointAtReturn = zoomit::OnExit([&] {
         --dispatchDepth;
         if (skipCheckpoint || dispatchDepth || std::uncaught_exceptions() != exceptions || message == WM_CREATE ||
             message == WM_DESTROY || message == WM_NCDESTROY || recovery::client.Recovering()) return;
-        const bool changed = canvasChangedThisDispatch || message == WM_HOTKEY || message == WM_LBUTTONUP || message == WM_USER_EXIT_MODE || message == WM_USER_EXIT_ZOOM ||
+        canvasDirty |= canvasChangedThisDispatch;
+        const bool changed = message == WM_HOTKEY || message == WM_LBUTTONUP || message == WM_USER_EXIT_MODE || message == WM_USER_EXIT_ZOOM ||
             message == WM_KEYDOWN || message == WM_COMMAND || message == recovery::RestoreMessage;
-        if (changed || message == WM_MOUSEWHEEL || message == WM_TIMER || message == recovery::ResetMessage ||
-            message == WM_USER_RESTORE_SYSTEM_POINTER || message == WM_USER_LIVE_ZOOM_WHEEL)
-            publish(changed);
+        if (canvasDirty || changed || message == WM_MOUSEWHEEL || message == WM_TIMER || message == WM_USER_SESSION_TICK || message == recovery::ResetMessage ||
+            message == WM_USER_RESTORE_SYSTEM_POINTER || message == WM_USER_LIVE_ZOOM_WHEEL || message == WM_USER_LIVE_ZOOM_ESCAPE)
+            publish(false);
     });
 
     const auto wheelEligible = [&]() noexcept {
@@ -2654,14 +2705,18 @@ LRESULT APIENTRY MainWndProcImpl(
     const auto syncWheelAtReturn = zoomit::OnExit([&] {
         if(dispatchDepth!=1)return;
         const HWND target=std::uncaught_exceptions()==exceptions && wheelEligible() ? hWnd : nullptr;
-        const DWORD error=g_LiveZoomWheel.SetTarget(target,WM_USER_LIVE_ZOOM_WHEEL,WM_USER_LIVE_ZOOM_WHEEL_ERROR);
-        if(error)recovery::client.Serious(L"Avvio controllo rotellina LiveZoom",error);
+        const DWORD error=g_LiveZoomWheel.SetTarget(target,WM_USER_LIVE_ZOOM_WHEEL,WM_USER_LIVE_ZOOM_WHEEL_ERROR,WM_USER_LIVE_ZOOM_ESCAPE);
+        if(error)recovery::client.Serious(L"Avvio controlli LiveZoom",error);
     });
 
     switch (message) {
     case WM_USER_CAN_SHOW_ZOOM_INDICATOR:
         return !g_TimerActive && !g_Drawing && !drawingSuspended && !hWndOptions && !g_SelectionActive &&
             !g_bSaveInProgress && !captureOperationDepth && !(g_Zoomed && (GetWindowLongPtr(hWnd,GWL_EXSTYLE)&WS_EX_LAYERED));
+    case WM_USER_LIVE_ZOOM_ESCAPE:
+        if(g_LiveZoomWheel.Accept(hWnd,wParam) && wheelEligible())
+            SendMessage(g_hWndLiveZoom,WM_KEYDOWN,VK_ESCAPE,0);
+        return 0;
     case WM_USER_LIVE_ZOOM_WHEEL:
         if(g_LiveZoomWheel.Accept(hWnd,wParam) && wheelEligible())
             SendMessage(g_hWndLiveZoom,WM_USER_LIVE_ZOOM_WHEEL,wParam,lParam);
@@ -2669,7 +2724,7 @@ LRESULT APIENTRY MainWndProcImpl(
     case WM_USER_LIVE_ZOOM_WHEEL_ERROR:
         if(g_LiveZoomWheel.Accept(hWnd,wParam)) {
             g_LiveZoomWheel.MarkFailed(hWnd,wParam);
-            recovery::client.Serious(L"Controllo rotellina LiveZoom non disponibile",static_cast<DWORD>(lParam));
+            recovery::client.Serious(L"Controlli LiveZoom non disponibili",static_cast<DWORD>(lParam));
         }
         return 0;
     case WM_CREATE:
@@ -2769,6 +2824,10 @@ LRESULT APIENTRY MainWndProcImpl(
     case WM_ENDSESSION:
         if (wParam) { recovery::client.NormalExit(); resetToIdle(); PostQuitMessage(0); }
         return 0;
+    case WM_USER_RESET_LIVE_SESSION:
+        if (static_cast<std::uint64_t>(wParam) == g_LiveSessionGeneration &&
+            reinterpret_cast<HWND>(lParam) == g_hWndLiveZoom) resetToIdle();
+        return 0;
     case recovery::ResetMessage:
         resetToIdle();
         return 0;
@@ -2777,16 +2836,37 @@ LRESULT APIENTRY MainWndProcImpl(
     case WM_POWERBROADCAST:
         if (message == WM_POWERBROADCAST && wParam != PBT_APMRESUMEAUTOMATIC && wParam != PBT_APMRESUMESUSPEND) break;
         if (g_Zoomed || g_TimerActive || IsWindowVisible(g_hWndLiveZoom)) {
-            POINT point{}; MONITORINFO current{};
-            if (!GetCursorPos(&point) || !UpdateMonitorInfo(point, &current) ||
-                !EqualRect(&current.rcMonitor, &monInfo.rcMonitor) || message == WM_POWERBROADCAST)
+            RECT activeMonitor = monInfo.rcMonitor;
+            LiveViewport viewport{};
+            if (!g_Zoomed && !g_TimerActive && IsWindowVisible(g_hWndLiveZoom)) {
+                if (!SendMessage(g_hWndLiveZoom, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&viewport))) {
+                    resetToIdle(); return 0;
+                }
+                activeMonitor = viewport.monitor;
+            }
+            POINT origin{activeMonitor.left, activeMonitor.top}; MONITORINFO current{};
+            if (!UpdateMonitorInfo(origin, &current) || !EqualRect(&current.rcMonitor, &activeMonitor) || message == WM_POWERBROADCAST)
                 resetToIdle();
         }
         return 0;
+    case WM_POINTERCAPTURECHANGED:
+        if (!activePointerId || GET_POINTERID_WPARAM(wParam) != activePointerId) return 0;
+        [[fallthrough]];
     case WM_CANCELMODE:
-    case WM_CAPTURECHANGED:
-        if (g_Tracing) { g_Tracing = FALSE; g_DrawingShape = 0; }
+    case WM_CAPTURECHANGED: {
+        if (message == WM_CAPTURECHANGED && intentionalCaptureRelease) return 0;
+        const bool unfinished = g_Tracing != FALSE;
+        g_Tracing = FALSE; g_DrawingShape = 0; g_PenDown = FALSE; activePointerId = 0;
+        if (unfinished && drawUndoList && g_Zoomed) {
+            if (!PopDrawUndo(hdcScreenCompat, &drawUndoList, width, height)) {
+                recovery::client.Serious(L"Annullamento tratto interrotto", ERROR_GEN_FAILURE); resetToIdle(); return 0;
+            }
+            canvasDirty = true;
+            if (g_Drawing) { SaveCursorArea(hdcScreenCursorCompat, hdcScreenCompat, prevPt); DrawCursor(hdcScreenCompat, prevPt, zoomLevel, width, height); }
+            InvalidateRect(hWnd, nullptr, FALSE);
+        }
         return 0;
+    }
     case recovery::RestoreMessage: {
         recovery::State saved{};
         if (!recovery::client.TakeRecovery(saved)) { recovery::client.FinishRecovery(); publish(false); return 0; }
@@ -2808,8 +2888,8 @@ LRESULT APIENTRY MainWndProcImpl(
                 if (saved.mode == recovery::Mode::LiveZoom || saved.liveActive || saved.mode == recovery::Mode::FrozenLiveDraw) {
                     SendMessage(hWnd, WM_HOTKEY, LIVE_HOTKEY, 0);
                     restored = IsWindowVisible(g_hWndLiveZoom) != FALSE;
-                    if (restored) SendMessage(g_hWndLiveZoom, WM_USER_SET_ZOOM, EncodeZoomLevel(saved.liveZoom),
-                        reinterpret_cast<LPARAM>(&saved.source));
+                    if (restored) restored = SendMessage(g_hWndLiveZoom, WM_USER_SET_ZOOM, EncodeZoomLevel(saved.liveZoom),
+                        reinterpret_cast<LPARAM>(&saved.source)) != 0;
                 }
                 if (restored && saved.mode == recovery::Mode::Break) {
                     SendMessage(hWnd, WM_COMMAND, IDC_BREAK, 0);
@@ -2822,7 +2902,8 @@ LRESULT APIENTRY MainWndProcImpl(
                     restored = g_Zoomed && width == static_cast<int>(saved.canvasWidth) &&
                         height == static_cast<int>(saved.canvasHeight) && recovery::client.RestoreCanvas(saved, hdcScreenCompat);
                     if (restored) {
-                        BitBlt(hdcScreenSaveCompat, 0, 0, width, height, hdcScreenCompat, 0, 0, SRCCOPY);
+                        if (!BitBlt(hdcScreenSaveCompat, 0, 0, width, height, hdcScreenCompat, 0, 0, SRCCOPY) || !GdiFlush()) restored = false;
+                        canvasDirty = true;
                         cursorPos = saved.view; prevPt = saved.pointer;
                         zoomLevel = zoomTelescopeTarget = saved.zoom; zoomTelescopeStep = 0;
                         g_Drawing = g_Tracing = FALSE; g_DrawingShape = 0; g_HaveDrawn = TRUE;
@@ -2830,15 +2911,14 @@ LRESULT APIENTRY MainWndProcImpl(
                         if (saved.mode == recovery::Mode::LiveDraw) {
                             SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED);
                             SetLayeredWindowAttributes(hWnd, RGB(0,0,0), 0, LWA_COLORKEY);
-                            if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                                SetLiveZoomFilter(hWnd,false);
-                            SetTimer(hWnd, 3, 10, nullptr);
+                            if ((IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,false)) ||
+                                !timers.Start(hWnd, 3, 10)) restored = false;
                         }
                         if (saved.mode == recovery::Mode::FrozenLiveDraw) {
                             g_ZoomOnLiveZoom = TRUE; g_LiveZoomLevel = saved.liveZoom; g_LiveZoomSourceRect = saved.source;
                         }
-                        ShowMainWindow(hWnd, monInfo, width, height);
-                        if (drawingSuspended) {
+                        if (restored) ShowMainWindow(hWnd, monInfo, width, height);
+                        if (restored && drawingSuspended) {
                             suspendedCursor.Update(g_PenColor); SetCapture(hWnd);
                             if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
                             SetCursor(suspendedCursor.Get());
@@ -2881,6 +2961,11 @@ LRESULT APIENTRY MainWndProcImpl(
         return 0;
 
 #ifdef ZOOMIT_TESTING
+    case WM_TEST_QUERY_TIMERS:
+        return static_cast<LRESULT>(timers.Id(static_cast<unsigned>(lParam)));
+    case WM_TEST_MARK_CANVAS_DIRTY:
+        if (g_Zoomed && !g_Tracing) { canvasDirty = true; publish(false); }
+        return 0;
     case WM_TEST_QUERY_MODE:
         return (g_Zoomed ? 1 : 0) | (g_Drawing ? 2 : 0) | (g_Tracing ? 4 : 0) | (g_ZoomOnLiveZoom ? 8 : 0) | (drawingSuspended ? 16 : 0) | (g_TimerActive ? 32 : 0);
     case WM_APP + 21:
@@ -2952,8 +3037,11 @@ LRESULT APIENTRY MainWndProcImpl(
                 exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
                 SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
                 SetLayeredWindowAttributes(hWnd, COLORREF(RGB(0, 0, 0)), 0, LWA_COLORKEY);
-                if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                    SetLiveZoomFilter(hWnd,false);
+                if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,false)) {
+                    SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle);
+                    recovery::client.Serious(L"Filtro ingresso LiveDraw", ERROR_GEN_FAILURE);
+                    break;
+                }
             }
             [[fallthrough]];
         }
@@ -2982,7 +3070,12 @@ LRESULT APIENTRY MainWndProcImpl(
 
                     SetLayeredWindowAttributes(hWnd, COLORREF(RGB(0, 0, 0)), 0, LWA_COLORKEY);
                     SendMessage(hWnd, WM_KEYDOWN, 'K', LIVE_DRAW_ZOOM);
-                    SetTimer(hWnd, 3, 10, NULL);
+                    if (!timers.Start(hWnd, 3, 10)) {
+                        recovery::client.Serious(L"Timer ingresso LiveDraw", GetLastError());
+                        SendMessage(hWnd, WM_KEYDOWN, VK_ESCAPE, 0);
+                        SendMessage(hWnd, WM_USER_EXIT_ZOOM, static_cast<WPARAM>(sessionGeneration), 0);
+                        break;
+                    }
                     SendMessage(hWnd, WM_MOUSEMOVE, 0, MAKELPARAM(cursorPos.x, cursorPos.y));
                     ShowMainWindow(hWnd, monInfo, width, height);
                     if( ( g_PenColor & 0xFFFFFF ) == COLOR_BLUR )
@@ -3021,12 +3114,13 @@ LRESULT APIENTRY MainWndProcImpl(
             const bool wasSuspended = drawingSuspended;
             const auto originalGeneration = sessionGeneration;
             bool normalSnipReturn = false;
-            POINT originalMouse{}; GetCursorPos(&originalMouse);
+            POINT originalMouse{};
+            const bool haveOriginalMouse = zoomit::runtime::ReadCursor(&originalMouse) != FALSE;
             const auto snipGuard = zoomit::OnExit([&] {
                 --captureOperationDepth;
                 if (normalSnipReturn && wasLiveOnly && !g_Zoomed && IsWindowVisible(g_hWndLiveZoom) &&
                     sessionGeneration == originalGeneration + 1) {
-                    SetCursorPos(originalMouse.x, originalMouse.y);
+                    if (haveOriginalMouse) SetCursorPos(originalMouse.x, originalMouse.y);
                     SendMessage(g_hWndLiveZoom, WM_USER_SET_ZOOM, EncodeZoomLevel(originalLiveLevel),
                                 reinterpret_cast<LPARAM>(&originalLiveSource));
                     return;
@@ -3039,7 +3133,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     DrawCursor(hdcScreenCompat, prevPt, zoomLevel, width, height);
                     EnableDisableStickyKeys(FALSE);
                     boundRc = BoundMouse(zoomLevel, &monInfo, width, height, &cursorPos);
-                    SetCursorPos(originalMouse.x, originalMouse.y);
+                    if (haveOriginalMouse) SetCursorPos(originalMouse.x, originalMouse.y);
                     SetCursor(nullptr);
                     if (pMagShowSystemCursor) pMagShowSystemCursor(FALSE);
                     InvalidateRect(hWnd, nullptr, FALSE);
@@ -3049,7 +3143,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     SetCapture(hWnd);
                     if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
                     SetCursor(suspendedCursor.Get());
-                    SetCursorPos(originalMouse.x, originalMouse.y);
+                    if (haveOriginalMouse) SetCursorPos(originalMouse.x, originalMouse.y);
                 }
             });
             bool zoomed = true;
@@ -3147,7 +3241,7 @@ LRESULT APIENTRY MainWndProcImpl(
             // If LiveZoom and LiveDraw are active then exit both
             if( g_Zoomed && IsWindowVisible( g_hWndLiveZoom ) && ( GetWindowLongPtr( hWnd, GWL_EXSTYLE ) & WS_EX_LAYERED ) )
             {
-                KillTimer(hWnd, 3);
+                timers.Stop(static_cast<unsigned>(3));
                 SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
                 SendMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY, SHALLOW_DESTROY);
                 if (IsWindow(g_hWndLiveZoom))
@@ -3171,8 +3265,9 @@ LRESULT APIENTRY MainWndProcImpl(
                     }
                     pSetLayeredWindowAttributes( hWnd, 0, 0, LWA_ALPHA );
                     EnableWindow( g_hWndLiveZoom, FALSE );
-                    if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                        SetLiveZoomFilter(hWnd,true);
+                    if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,true)) {
+                        recovery::client.Serious(L"Filtro iniziale LiveZoom", ERROR_GEN_FAILURE); resetToIdle(); break;
+                    }
 
                 } else {
 
@@ -3186,7 +3281,10 @@ LRESULT APIENTRY MainWndProcImpl(
                     }
                 }
 
-                
+                if (IsWindowVisible(g_hWndLiveZoom)) {
+                    LiveViewport viewport{};
+                    if (!SendMessage(g_hWndLiveZoom, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&viewport))) resetToIdle();
+                }
             }
             break;
 
@@ -3226,7 +3324,7 @@ LRESULT APIENTRY MainWndProcImpl(
                 }
 
                 SetFocus( GetDesktopWindow() );
-                KillTimer( hWnd, 0 );
+                timers.Stop(static_cast<unsigned>(0));
                 g_TimerActive = FALSE;
                 releaseSession();
                 EnableDisableScreenSaver( TRUE );
@@ -3242,8 +3340,18 @@ LRESULT APIENTRY MainWndProcImpl(
                     // Prepare into local owners; callbacks still observe the previous mode.
                     MONITORINFO preparedMonitor{};
                     zoomit::GraphicsSession prepared;
-                    if (!GetCursorPos(&cursorPos) || !UpdateMonitorInfo(cursorPos, &preparedMonitor) ||
-                        !prepared.Prepare(preparedMonitor.rcMonitor, g_PenWidth, g_PenColor)) {
+                    LiveViewport preparedLive{};
+                    bool haveMonitor = zoomit::runtime::ReadCursor(&cursorPos) != FALSE;
+                    if (haveMonitor && IsWindowVisible(g_hWndLiveZoom)) {
+                        haveMonitor = SendMessage(g_hWndLiveZoom, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&preparedLive)) != 0;
+                        if (haveMonitor) {
+                            preparedMonitor.cbSize = sizeof(preparedMonitor);
+                            preparedMonitor.rcMonitor = preparedMonitor.rcWork = preparedLive.monitor;
+                            cursorPos.x = (std::clamp)(cursorPos.x, preparedLive.monitor.left, preparedLive.monitor.right-1);
+                            cursorPos.y = (std::clamp)(cursorPos.y, preparedLive.monitor.top, preparedLive.monitor.bottom-1);
+                        }
+                    } else if (haveMonitor) haveMonitor = UpdateMonitorInfo(cursorPos, &preparedMonitor);
+                    if (!haveMonitor || !prepared.Prepare(preparedMonitor.rcMonitor, g_PenWidth, g_PenColor)) {
                         recovery::client.Serious(L"Preparazione risorse Zoom", ERROR_NOT_ENOUGH_MEMORY);
                         if (IsWindowVisible(g_hWndLiveZoom)) {
                             SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
@@ -3255,7 +3363,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     }
                     if (IsWindowVisible(g_hWndLiveZoom)) {
                         SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, FALSE, 0);
-                        SendMessage(g_hWndLiveZoom, WM_TIMER, 0, 0);
+                        SendMessage(g_hWndLiveZoom, WM_USER_SESSION_TICK, 0, 0);
                         // Capture again after hiding the magnified pointer.
                         if (!BitBlt(prepared.canvas, 0, 0, preparedMonitor.rcMonitor.right-preparedMonitor.rcMonitor.left,
                                 preparedMonitor.rcMonitor.bottom-preparedMonitor.rcMonitor.top, prepared.screen,
@@ -3279,7 +3387,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     width = preparedMonitor.rcMonitor.right-preparedMonitor.rcMonitor.left;
                     height = preparedMonitor.rcMonitor.bottom-preparedMonitor.rcMonitor.top;
                     GetObject(hbmpCompat, sizeof(bmp), &bmp);
-                    g_Zoomed = TRUE; g_DrawingShape = FALSE;
+                    g_Zoomed = TRUE; g_DrawingShape = FALSE; canvasDirty = true;
 
                     g_BlankedScreen = FALSE;
 
@@ -3360,7 +3468,11 @@ LRESULT APIENTRY MainWndProcImpl(
                             zoomLevel = static_cast<float>(1.0) * zoomTelescopeStep; 
                         else
                             zoomLevel = zoomTelescopeTarget;
-                        SetTimer( hWnd, 1, ZOOM_LEVEL_STEP_TIME, NULL );
+                        if (!timers.Start(hWnd, 1, ZOOM_LEVEL_STEP_TIME)) {
+                            recovery::client.Serious(L"Timer animazione Zoom", GetLastError());
+                            zoomLevel = zoomTelescopeTarget; zoomTelescopeStep = 0;
+                            InvalidateRect(hWnd, nullptr, FALSE);
+                        }
                         ShowZoomIndicator(zoomTelescopeTarget,hWnd,false);
                     }
 
@@ -3377,14 +3489,18 @@ LRESULT APIENTRY MainWndProcImpl(
                         // Start telescoping zoom. 
                         zoomTelescopeStep = ZOOM_LEVEL_STEP_OUT;
                         zoomTelescopeTarget = 1.0;
-                        SetTimer( hWnd, 2, ZOOM_LEVEL_STEP_TIME, NULL );
+                        if (!timers.Start(hWnd, 2, ZOOM_LEVEL_STEP_TIME)) {
+                            recovery::client.Serious(L"Timer uscita Zoom", GetLastError());
+                            zoomLevel = zoomTelescopeTarget; zoomTelescopeStep = 0;
+                            SendMessage(hWnd, WM_USER_SESSION_TICK, 2, lParam);
+                        }
 
                     } else {
 
                         // Simulate timer expiration
                         zoomTelescopeStep = 0;
                         zoomTelescopeTarget = zoomLevel = 1.0;
-                        SendMessage( hWnd, WM_TIMER, 2, lParam );
+                        SendMessage( hWnd, WM_USER_SESSION_TICK, 2, lParam );
                     }
                 }
             }
@@ -3393,6 +3509,10 @@ LRESULT APIENTRY MainWndProcImpl(
         return TRUE;
 
     case WM_POINTERUPDATE: {
+        if (activePointerId && GET_POINTERID_WPARAM(wParam) != activePointerId) return TRUE;
+        if (IS_POINTER_CANCELED_WPARAM(wParam)) {
+            SendMessage(hWnd, WM_POINTERCAPTURECHANGED, wParam, 0); return TRUE;
+        }
         penInverted = IsPenInverted(wParam);
         OutputDebug( L"WM_POINTERUPDATE: contact: %d button down: %d X: %d Y: %d\n",
             IS_POINTER_INCONTACT_WPARAM(wParam),
@@ -3404,6 +3524,7 @@ LRESULT APIENTRY MainWndProcImpl(
             g_PenInverted = penInverted;
             if (g_PenInverted) {
                 if (PopDrawUndo(hdcScreenCompat, &drawUndoList, width, height)) {
+                    canvasDirty = true;
 
                     SaveCursorArea(hdcScreenCursorCompat, hdcScreenCompat, prevPt);
                     InvalidateRect(hWnd, NULL, FALSE);
@@ -3417,6 +3538,7 @@ LRESULT APIENTRY MainWndProcImpl(
         return TRUE;
 
     case WM_POINTERUP:
+        if (!activePointerId || GET_POINTERID_WPARAM(wParam) != activePointerId) return TRUE;
         OutputDebug(L"WM_POINTERUP\n");
         penInverted = IsPenInverted(wParam);
         if (!penInverted) {
@@ -3425,21 +3547,24 @@ LRESULT APIENTRY MainWndProcImpl(
             SendPenMessage(hWnd, WM_RBUTTONDOWN, lParam);
             g_PenDown = FALSE;
         }
+        activePointerId = 0; g_PenDown = FALSE;
         break;
 
     case WM_POINTERDOWN: 
+        if (activePointerId || !g_Zoomed || !hdcScreenCompat || g_TimerActive || captureOperationDepth || g_SelectionActive || g_bSaveInProgress) return TRUE;
         OutputDebug(L"WM_POINTERDOWN\n");
         penInverted = IsPenInverted(wParam);
         if (!penInverted) {
 
             g_PenDown = TRUE;
+            activePointerId = GET_POINTERID_WPARAM(wParam);
 
             // Enter drawing mode
             SendPenMessage(hWnd, WM_LBUTTONDOWN, lParam);
             SendPenMessage(hWnd, WM_MOUSEMOVE, lParam);
             SendPenMessage(hWnd, WM_LBUTTONUP, lParam);
             SendPenMessage(hWnd, WM_MOUSEMOVE, lParam);
-            PopDrawUndo(hdcScreenCompat, &drawUndoList, width, height);
+            if (PopDrawUndo(hdcScreenCompat, &drawUndoList, width, height)) canvasDirty = true;
 
             // Enter tracing mode
             SendPenMessage(hWnd, WM_LBUTTONDOWN, lParam);
@@ -3505,8 +3630,10 @@ LRESULT APIENTRY MainWndProcImpl(
                         }
                         // Also redraw immediate changes; there is no timer to do it later.
                         InvalidateRect(hWnd, nullptr, FALSE);
-                        if (zoomLevel != zoomTelescopeTarget)
-                            SetTimer(hWnd, 1, ZOOM_LEVEL_STEP_TIME, nullptr);
+                        if (zoomLevel != zoomTelescopeTarget && !timers.Start(hWnd, 1, ZOOM_LEVEL_STEP_TIME)) {
+                            recovery::client.Serious(L"Timer variazione Zoom", GetLastError());
+                            zoomLevel = zoomTelescopeTarget; zoomTelescopeStep = 0;
+                        }
                     }
                     if(previousIndicatorTarget!=zoomTelescopeTarget && !g_Drawing && !drawingSuspended)
                         ShowZoomIndicator(zoomTelescopeTarget,hWnd,false);
@@ -3545,8 +3672,8 @@ LRESULT APIENTRY MainWndProcImpl(
                 breakTimeout -= delta * 60;
             }
             if( breakTimeout < 0 ) breakTimeout = 0;
-            KillTimer( hWnd, 0 );
-            SetTimer( hWnd, 0, 1000, NULL );
+            timers.Stop(static_cast<unsigned>(0));
+            if (!timers.Start(hWnd, 0, 1000)) { recovery::client.Serious(L"Timer pausa", GetLastError()); resetToIdle(); break; }
             InvalidateRect( hWnd, NULL, TRUE );
         }
 
@@ -3643,6 +3770,7 @@ LRESULT APIENTRY MainWndProcImpl(
             if( (GetKeyState( VK_CONTROL ) & 0x8000 ) && g_HaveDrawn && !g_Tracing ) {
 
                 if( PopDrawUndo( hdcScreenCompat, &drawUndoList, width, height )) {
+                    canvasDirty = true;
                 
                     if( g_Drawing ) {
 
@@ -3693,6 +3821,7 @@ LRESULT APIENTRY MainWndProcImpl(
                 rc.bottom = height;
                 rc.right = width;
                 BlankScreenArea( hdcScreenCompat, &rc, g_BlankedScreen );
+                canvasDirty = true;
                 InvalidateRect( hWnd, NULL, FALSE );
 
                 // Save area that's going to be occupied by new cursor position
@@ -3706,6 +3835,7 @@ LRESULT APIENTRY MainWndProcImpl(
             if( g_HaveDrawn) {
 
                 DeleteDrawUndoList( &drawUndoList );
+                canvasDirty = true;
                 g_HaveDrawn = FALSE;
                 OutputDebug(L"Erase\n");
                 if(GetWindowLong(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) {
@@ -3750,8 +3880,8 @@ LRESULT APIENTRY MainWndProcImpl(
                 breakTimeout += delta;
                 breakTimeout -= (breakTimeout % 10);
                 if( breakTimeout < 0 ) breakTimeout = 0;
-                KillTimer( hWnd, 0 );
-                SetTimer( hWnd, 0, 1000, NULL );
+                timers.Stop(static_cast<unsigned>(0));
+                if (!timers.Start(hWnd, 0, 1000)) { recovery::client.Serious(L"Timer pausa", GetLastError()); resetToIdle(); break; }
                 InvalidateRect( hWnd, NULL, TRUE );
             }
             break;
@@ -3766,11 +3896,12 @@ LRESULT APIENTRY MainWndProcImpl(
                 // In case we were in liveDraw
                 if( GetWindowLong(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED) {
 
-                    KillTimer(hWnd, 3);
+                    timers.Stop(static_cast<unsigned>(3));
                     LONG_PTR exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
                     SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
-                    if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                        SetLiveZoomFilter(hWnd,true);
+                    if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,true)) {
+                        recovery::client.Serious(L"Ripristino filtro dopo LiveDraw", ERROR_GEN_FAILURE); resetToIdle(); break;
+                    }
                     SendMessage( g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0 );
                 }
             }
@@ -4165,6 +4296,7 @@ LRESULT APIENTRY MainWndProcImpl(
         return TRUE;
 
     case WM_LBUTTONUP:
+        if (g_Zoomed && g_Tracing) canvasDirty = true;
         OutputDebug(L"LBUTTONUP: zoomed: %d drawing: %d tracing: %d\n", 
             g_Zoomed, g_Drawing, g_Tracing);
 
@@ -4251,7 +4383,6 @@ LRESULT APIENTRY MainWndProcImpl(
                 DrawShape( g_DrawingShape, hdcScreenCompat, &g_rcRectangle, true );
 
                 InvalidateRect( hWnd, NULL, FALSE );
-                DeleteObject( hBrush );
                 SelectObject( hdcScreenCompat, oldHbrush );
 
                 prevPt.x = LOWORD( lParam );
@@ -4285,9 +4416,10 @@ LRESULT APIENTRY MainWndProcImpl(
             SetForegroundWindow( hWndOptions ? hWndOptions : hWnd );
 
             // Pop up context menu
-            POINT pt;
-            GetCursorPos( &pt );
+            POINT pt{};
+            if (!zoomit::runtime::ReadCursor(&pt)) break;
             hPopupMenu = CreatePopupMenu();
+            if (!hPopupMenu) break;
             if(!g_StartedByPowerToys) {
                 // Exiting will happen through disabling in PowerToys, not the context menu.
                 InsertMenu( hPopupMenu, 0, MF_BYPOSITION, IDCANCEL, L"E&xit" );
@@ -4301,6 +4433,8 @@ LRESULT APIENTRY MainWndProcImpl(
                 InsertMenu( hPopupMenu, 0, MF_BYPOSITION|MF_SEPARATOR, 0, NULL );
                 InsertMenu( hPopupMenu, 0, MF_BYPOSITION, IDC_OPTIONS, L"&Options" );
             }
+            // Escape belongs to the menu while its modal loop is active.
+            g_LiveZoomWheel.SetTarget(nullptr,0,0);
             TrackPopupMenu( hPopupMenu, 0, pt.x , pt.y, 0, hWnd, NULL );
             DestroyMenu( hPopupMenu );
             break;
@@ -4469,19 +4603,13 @@ LRESULT APIENTRY MainWndProcImpl(
                 skipCheckpoint = true; break;
             }
             g_ZoomIndicator.Hide(true);
+            g_LiveZoomWheel.SetTarget(nullptr,0,0);
             ++captureOperationDepth;
             const auto captureGuard = zoomit::OnExit([&] { --captureOperationDepth; });
             const auto captureGeneration = sessionGeneration;
             POINT local_savedCursorPos{};
-            if( lParam != SHALLOW_ZOOM )
-            {
-                GetCursorPos(&local_savedCursorPos);
-            }
+            const bool haveSavedCursor = lParam != SHALLOW_ZOOM && zoomit::runtime::ReadCursor(&local_savedCursorPos);
 
-            HBITMAP     hInterimSaveBitmap = nullptr;
-            HDC         hInterimSaveDc;
-            HBITMAP     hSaveBitmap = nullptr;
-            HDC         hSaveDc;
             int         copyX, copyY;
             int         copyWidth, copyHeight;
 
@@ -4492,7 +4620,7 @@ LRESULT APIENTRY MainWndProcImpl(
                 if( !selectRectangle.Start( hWnd ) )
                 {
                     g_SelectionActive = FALSE;
-                    if( lParam != SHALLOW_ZOOM )
+                    if( haveSavedCursor )
                     {
                         SetCursorPos(local_savedCursorPos.x, local_savedCursorPos.y);
                     }
@@ -4517,113 +4645,51 @@ LRESULT APIENTRY MainWndProcImpl(
             OutputDebug( L"***x: %d, y: %d, width: %d, height: %d\n", copyX, copyY, copyWidth, copyHeight );
 
             RECT oldClipRect{};
-            GetClipCursor( &oldClipRect );
-            ClipCursor( NULL );
-
-            // Capture the screen before displaying the save dialog
-            hInterimSaveDc = CreateCompatibleDC( hdcScreen );
-            hInterimSaveBitmap = CreateCompatibleBitmap( hdcScreen, copyWidth, copyHeight );
-            SelectObject( hInterimSaveDc, hInterimSaveBitmap );
-
-            hSaveDc = CreateCompatibleDC( hdcScreen );
-            if (!hInterimSaveDc || !hInterimSaveBitmap || !hSaveDc) {
-                DeleteDC(hInterimSaveDc); DeleteDC(hSaveDc); DeleteObject(hInterimSaveBitmap);
-                ClipCursor(&oldClipRect);
-                MessageBox(hWnd, L"Not enough graphics resources to save this image.", APPNAME, MB_ICONERROR);
-                break;
+            const bool haveClip=GetClipCursor(&oldClipRect)!=FALSE;
+            ClipCursor(nullptr);
+            const auto restoreClip=zoomit::OnExit([&] {
+                const bool valid=g_Zoomed && hdcScreen && captureGeneration==sessionGeneration;
+                ClipCursor(valid && haveClip ? &oldClipRect : nullptr);
+                if(valid && haveSavedCursor)SetCursorPos(local_savedCursorPos.x,local_savedCursorPos.y);
+            });
+            CapturedBitmap interim;
+            if(!interim.Capture(hdcScreen,monInfo.rcMonitor.left+copyX,monInfo.rcMonitor.top+copyY,copyWidth,copyHeight,copyWidth,copyHeight)) {
+                recovery::client.Serious(L"Cattura immagine da salvare", ERROR_GEN_FAILURE);
+                MessageBox(hWnd,L"Unable to capture this image. The current drawing has been preserved.",APPNAME,MB_ICONERROR);break;
             }
-#if SCALE_HALFTONE
-            SetStretchBltMode( hInterimSaveDc, HALFTONE );
-            SetStretchBltMode( hSaveDc, HALFTONE );
-#else
-            SetStretchBltMode( hInterimSaveDc, COLORONCOLOR );
-            SetStretchBltMode( hSaveDc, COLORONCOLOR );
-#endif
-            StretchBlt( hInterimSaveDc,
-                        0, 0,
-                        copyWidth, copyHeight,
-                        hdcScreen,
-                        monInfo.rcMonitor.left + copyX,
-                        monInfo.rcMonitor.top + copyY,
-                        copyWidth, copyHeight,
-                        SRCCOPY|CAPTUREBLT );
-
-            g_bSaveInProgress = true;
-            memset( &openFileName, 0, sizeof(openFileName ));
-            openFileName.lStructSize       = OPENFILENAME_SIZE_VERSION_400;
-            openFileName.hwndOwner         = hWnd;
-            openFileName.hInstance         = static_cast<HINSTANCE>(g_hInstance);
-            openFileName.nMaxFile          = sizeof(filePath)/sizeof(filePath[0]);
-            openFileName.Flags				= OFN_LONGNAMES|OFN_HIDEREADONLY|OFN_OVERWRITEPROMPT;
-            openFileName.lpstrTitle        = L"Save zoomed screen...";
-            openFileName.lpstrDefExt       = L"png";
-            openFileName.nFilterIndex      = 1;
-            openFileName.lpstrFilter       = L"Zoomed PNG\0*.png\0"
-                                             //"Zoomed BMP\0*.bmp\0"	
-                                             "Actual size PNG\0*.png\0\0";
-                                             //"Actual size BMP\0*.bmp\0\0";
-            openFileName.lpstrFile			= filePath;
-            const auto saveGuard = zoomit::OnExit([&] { g_bSaveInProgress = false; });
-            BOOL saveAccepted;
+            g_bSaveInProgress=true;
+            const auto saveGuard=zoomit::OnExit([&]{g_bSaveInProgress=false;});
+            openFileName={};openFileName.lStructSize=OPENFILENAME_SIZE_VERSION_400;
+            openFileName.hwndOwner=hWnd;openFileName.hInstance=g_hInstance;
+            openFileName.nMaxFile=_countof(filePath);
+            openFileName.Flags=OFN_LONGNAMES|OFN_HIDEREADONLY|OFN_OVERWRITEPROMPT;
+            openFileName.lpstrTitle=L"Save zoomed screen...";openFileName.lpstrDefExt=L"png";
+            openFileName.nFilterIndex=1;
+            openFileName.lpstrFilter=L"Zoomed PNG\0*.png\0Actual size PNG\0*.png\0\0";
+            openFileName.lpstrFile=filePath;
+            BOOL accepted;
 #ifdef ZOOMIT_TESTING
-            if (g_TestBeforeSaveDialog) g_TestBeforeSaveDialog();
-            if (g_TestMode) {
-                saveAccepted = g_TestSavePath != nullptr;
-                if (saveAccepted) {
-                    wcscpy_s(filePath, g_TestSavePath);
-                    openFileName.nFilterIndex = g_TestSaveFilter;
-                }
+            if(g_TestBeforeSaveDialog)g_TestBeforeSaveDialog();
+            if(g_TestMode) {
+                accepted=g_TestSavePath!=nullptr;
+                if(accepted){wcscpy_s(filePath,g_TestSavePath);openFileName.nFilterIndex=g_TestSaveFilter;}
             } else
 #endif
-            saveAccepted = GetSaveFileName(&openFileName);
-            const bool sessionStillValid = g_Zoomed && hdcScreen && captureGeneration == sessionGeneration;
-            if (saveAccepted && sessionStillValid)
-            {
-                DWORD saveResult = ERROR_SUCCESS;
-                TCHAR targetFilePath[MAX_PATH];
-                _tcscpy_s(targetFilePath, filePath);
-
-                // Save image at screen size
-                if( openFileName.nFilterIndex == 1 )
-                {
-                    saveResult = SavePng(targetFilePath, hInterimSaveBitmap);
+            accepted=GetSaveFileName(&openFileName);
+            if(accepted && g_Zoomed && hdcScreen && captureGeneration==sessionGeneration) {
+                DWORD result;
+                if(openFileName.nFilterIndex==1)result=SavePng(filePath,interim.ReadyImage());
+                else {
+                    CapturedBitmap actual;
+                    const int saveWidth=(std::max)(1,static_cast<int>(copyWidth/zoomLevel));
+                    const int saveHeight=(std::max)(1,static_cast<int>(copyHeight/zoomLevel));
+                    result=actual.Capture(interim.Dc(),0,0,copyWidth,copyHeight,saveWidth,saveHeight) ?
+                        SavePng(filePath,actual.ReadyImage()) : ERROR_GEN_FAILURE;
                 }
-                // Save image scaled down to actual size
-                else
-                {
-                    int saveWidth = (std::max)(1, static_cast<int>(copyWidth / zoomLevel));
-                    int saveHeight = (std::max)(1, static_cast<int>(copyHeight / zoomLevel));
-
-                    hSaveBitmap = CreateCompatibleBitmap( hdcScreen, saveWidth, saveHeight );
-                    SelectObject( hSaveDc, hSaveBitmap );
-
-                    StretchBlt( hSaveDc,
-                                0, 0,
-                                saveWidth, saveHeight,
-                                hInterimSaveDc,
-                                0,
-                                0,
-                                copyWidth, copyHeight,
-                                SRCCOPY | CAPTUREBLT );
-				
-                    saveResult = SavePng(targetFilePath, hSaveBitmap);
+                if(result!=ERROR_SUCCESS) {
+                    recovery::client.Serious(L"Salvataggio PNG",result);
+                    MessageBox(hWnd,L"Unable to save this image. Check the destination and available resources.",APPNAME,MB_ICONERROR);
                 }
-                if (saveResult != ERROR_SUCCESS)
-                    MessageBox(hWnd, L"Unable to save this image. Check the destination and available resources.", APPNAME, MB_ICONERROR);
-            }
-            g_bSaveInProgress = false;
-
-            DeleteDC( hInterimSaveDc );
-            DeleteDC( hSaveDc );
-            DeleteObject(hInterimSaveBitmap);
-            if (hSaveBitmap) DeleteObject(hSaveBitmap);
-
-            if (sessionStillValid) {
-                if (lParam != SHALLOW_ZOOM)
-                    SetCursorPos(local_savedCursorPos.x, local_savedCursorPos.y);
-                ClipCursor(&oldClipRect);
-            } else {
-                ClipCursor(nullptr);
             }
             break;
         }
@@ -4634,11 +4700,11 @@ LRESULT APIENTRY MainWndProcImpl(
                 skipCheckpoint = true; break;
             }
             g_ZoomIndicator.Hide(true);
+            g_LiveZoomWheel.SetTarget(nullptr,0,0);
             ++captureOperationDepth;
             const auto captureGuard = zoomit::OnExit([&] { --captureOperationDepth; });
             const auto captureGeneration = sessionGeneration;
             HBITMAP		hSaveBitmap;
-            HDC			hSaveDc;
             int         copyX, copyY;
             int         copyWidth, copyHeight;
 
@@ -4646,10 +4712,7 @@ LRESULT APIENTRY MainWndProcImpl(
             {
                 g_SelectionActive = TRUE;
                 POINT local_savedCursorPos{};
-                if( lParam != SHALLOW_ZOOM )
-                {
-                    GetCursorPos(&local_savedCursorPos);
-                }
+                const bool haveSavedCursor = lParam != SHALLOW_ZOOM && zoomit::runtime::ReadCursor(&local_savedCursorPos);
                 SelectRectangle selectRectangle;
                 if( !selectRectangle.Start( hWnd ) )
                 {
@@ -4658,7 +4721,7 @@ LRESULT APIENTRY MainWndProcImpl(
                 }
                 auto copyRc = selectRectangle.SelectedRect();
                 selectRectangle.Stop();
-                if( lParam != SHALLOW_ZOOM )
+                if( haveSavedCursor )
                 {
                     SetCursorPos(local_savedCursorPos.x, local_savedCursorPos.y);
                 }
@@ -4679,43 +4742,24 @@ LRESULT APIENTRY MainWndProcImpl(
             }
             OutputDebug( L"***x: %d, y: %d, width: %d, height: %d\n", copyX, copyY, copyWidth, copyHeight );
 
-            hSaveBitmap = CreateCompatibleBitmap( hdcScreen, copyWidth, copyHeight );
-            hSaveDc = CreateCompatibleDC( hdcScreen );
-            if (!hSaveBitmap || !hSaveDc) {
-                DeleteDC(hSaveDc); DeleteObject(hSaveBitmap);
-                MessageBox(hWnd, L"Not enough graphics resources to copy this image.", APPNAME, MB_ICONERROR);
-                break;
+            CapturedBitmap captured;
+            if(!captured.Capture(hdcScreen,monInfo.rcMonitor.left+copyX,monInfo.rcMonitor.top+copyY,copyWidth,copyHeight,copyWidth,copyHeight)) {
+                recovery::client.Serious(L"Cattura immagine da copiare",ERROR_GEN_FAILURE);
+                MessageBox(hWnd,L"Unable to capture this image. The current drawing has been preserved.",APPNAME,MB_ICONERROR);break;
             }
-            SelectObject( hSaveDc, hSaveBitmap );
-#if SCALE_HALFTONE
-            SetStretchBltMode( hSaveDc, HALFTONE );
-#else
-            SetStretchBltMode( hSaveDc, COLORONCOLOR );
-#endif
-			StretchBlt( hSaveDc,
-                        0, 0,
-                        copyWidth, copyHeight,
-                        hdcScreen,
-                        monInfo.rcMonitor.left + copyX,
-                        monInfo.rcMonitor.top + copyY,
-                        copyWidth, copyHeight,
-                        SRCCOPY|CAPTUREBLT ); 
-
-            DeleteDC(hSaveDc);
-            hSaveDc = nullptr;
+            hSaveBitmap=captured.ReleaseImage();
+            const auto releaseImage=zoomit::OnExit([&]{if(hSaveBitmap)DeleteObject(hSaveBitmap);});
 #ifdef ZOOMIT_TESTING
-            if (g_TestMode) {
-                if (g_TestSnipBitmap) DeleteObject(g_TestSnipBitmap);
-                g_TestSnipBitmap = hSaveBitmap;
-                hSaveBitmap = nullptr;
+            if(g_TestMode) {
+                if(g_TestSnipBitmap)DeleteObject(g_TestSnipBitmap);
+                g_TestSnipBitmap=std::exchange(hSaveBitmap,nullptr);
             } else
 #endif
-            if (OpenClipboard(hWnd)) {
-                if (EmptyClipboard() && SetClipboardData(CF_BITMAP, hSaveBitmap))
-                    hSaveBitmap = nullptr;
-                CloseClipboard();
-            }
-            if (hSaveBitmap) DeleteObject(hSaveBitmap);
+            if(OpenClipboard(hWnd)) {
+                const auto closeClipboard=zoomit::OnExit([]{CloseClipboard();});
+                if(EmptyClipboard() && SetClipboardData(CF_BITMAP,hSaveBitmap))hSaveBitmap=nullptr;
+                else recovery::client.Serious(L"Pubblicazione immagine negli appunti",GetLastError());
+            } else recovery::client.Serious(L"Apertura appunti",GetLastError());
             }
             break;
 
@@ -4779,8 +4823,7 @@ LRESULT APIENTRY MainWndProcImpl(
             }
 
             // Determine what monitor we're on
-            GetCursorPos( &cursorPos );
-            if (!UpdateMonitorInfo(cursorPos, &monInfo)) {
+            if (!zoomit::runtime::ReadCursor(&cursorPos) || !UpdateMonitorInfo(cursorPos, &monInfo)) {
                 recovery::client.Serious(L"Lettura monitor Break", ERROR_INVALID_DATA); resetToIdle(); break;
             }
             width = monInfo.rcMonitor.right - monInfo.rcMonitor.left;
@@ -4870,8 +4913,8 @@ LRESULT APIENTRY MainWndProcImpl(
             EnableDisableOpacity( hWnd, TRUE );
             EnableDisableScreenSaver( FALSE );
 
-            SendMessage( hWnd, WM_TIMER, 0, 0 );
-            SetTimer( hWnd, 0, 1000, NULL );
+            SendMessage( hWnd, WM_USER_SESSION_TICK, 0, 0 );
+            if (!timers.Start(hWnd, 0, 1000)) { recovery::client.Serious(L"Timer pausa", GetLastError()); resetToIdle(); break; }
 
             BringWindowToTop( hWnd );
             SetForegroundWindow( hWnd );
@@ -4901,8 +4944,15 @@ LRESULT APIENTRY MainWndProcImpl(
         break;
 
     case WM_TIMER:
+    case WM_USER_SESSION_TICK:
+        if (message == WM_TIMER) {
+            const int role = timers.Role(wParam);
+            if (role < 0) { skipCheckpoint = true; return 0; }
+            wParam = static_cast<WPARAM>(role);
+        }
         switch( wParam ) {
         case 0:
+            if (!g_TimerActive) break;
             //
             // Break timer
             //
@@ -4916,6 +4966,7 @@ LRESULT APIENTRY MainWndProcImpl(
 
         case 2:
         case 1:
+            if (!g_Zoomed) break;
             //
             // Telescoping zoom timer
             //
@@ -4926,7 +4977,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     (zoomTelescopeStep < 1 && zoomLevel <= zoomTelescopeTarget )) {
 
                     zoomLevel = zoomTelescopeTarget;
-                    KillTimer( hWnd, wParam );
+                    timers.Stop(static_cast<unsigned>(wParam));
                     OutputDebug( L"SETCURSOR mon_left: %x mon_top: %x x: %d y: %d\n",
                             monInfo.rcMonitor.left, monInfo.rcMonitor.top, cursorPos.x, cursorPos.y );
                     SetCursorPos( monInfo.rcMonitor.left + cursorPos.x, 
@@ -4936,16 +4987,18 @@ LRESULT APIENTRY MainWndProcImpl(
             } else {
 
                 // Case where we didn't zoom at all
-                KillTimer( hWnd, wParam );
+                timers.Stop(static_cast<unsigned>(wParam));
             }
             if( wParam == 2 && zoomLevel == 1 ) {
 
                 g_Zoomed = FALSE;
                 if( g_ZoomOnLiveZoom )
                 {
-                    GetCursorPos( &cursorPos );
-                    cursorPos = ScalePointInRects( cursorPos, monInfo.rcMonitor, g_LiveZoomSourceRect );
-                    SetCursorPos( cursorPos.x, cursorPos.y );
+                    POINT exitingCursor{};
+                    if (zoomit::runtime::ReadCursor(&exitingCursor)) {
+                        cursorPos = ScalePointInRects(exitingCursor, monInfo.rcMonitor, g_LiveZoomSourceRect);
+                        SetCursorPos(cursorPos.x, cursorPos.y);
+                    }
                     SendMessage(hWnd, WM_HOTKEY, LIVE_HOTKEY, 0);
                 }
                 else if( lParam != SHALLOW_ZOOM )
@@ -5003,12 +5056,13 @@ LRESULT APIENTRY MainWndProcImpl(
                 SendMessage(hWnd, WM_LBUTTONUP, 0, MAKELPARAM(prevPt.x, prevPt.y));
                 canvasChangedThisDispatch = true;
             }
-            POINT mousePos;
-            GetCursorPos(&mousePos);
+            if (drawingSuspended) break;
+            POINT mousePos{};
+            if (!zoomit::runtime::ReadCursor(&mousePos)) break;
             if (mousePos.x != cursorPos.x || mousePos.y != cursorPos.y)
             {
                 MONITORINFO monitorInfo = { sizeof(MONITORINFO) };
-                UpdateMonitorInfo(mousePos, &monitorInfo);
+                if (!UpdateMonitorInfo(mousePos, &monitorInfo)) break;
 
                 mousePos.x -= monitorInfo.rcMonitor.left;
                 mousePos.y -= monitorInfo.rcMonitor.top;
@@ -5176,7 +5230,7 @@ LRESULT APIENTRY MainWndProcImpl(
         g_LiveZoomWheel.Shutdown();
         endSuspension();
 
-        KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3);
+        timers.Stop(static_cast<unsigned>(0)); timers.Stop(static_cast<unsigned>(1)); timers.Stop(static_cast<unsigned>(2)); timers.Stop(static_cast<unsigned>(3));
         if (g_TimerActive) EnableDisableScreenSaver(TRUE);
         EnableDisableStickyKeys(TRUE);
         ClipCursor(nullptr);
@@ -5225,7 +5279,7 @@ LRESULT APIENTRY MainWndProc(HWND window, UINT message, WPARAM word, LPARAM para
 LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     RECT		rc;
-    POINT		cursorPos;
+    POINT		cursorPos{};
     static int	width, height;
     static MONITORINFO	monInfo;
 #if 0
@@ -5249,13 +5303,19 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
     static float resumeZoom = 2.0f;
     static bool holdRestoredView = false;
     static BOOL		dwmEnabled = FALSE;
+    static zoomit::runtime::SessionTimers<2> timers;
+    static bool resetQueued = false;
+    static ULONGLONG cursorUnavailableSince = 0;
     static BOOLEAN	startedInPresentationMode = FALSE;
     MAGTRANSFORM matrix;
 
     const auto graphicsFailure = [&](const wchar_t* operation) {
+        if (resetQueued) return;
+        resetQueued = true;
         const DWORD error = GetLastError();
         recovery::client.Serious(operation, error ? error : ERROR_GEN_FAILURE);
-        PostMessage(g_hWndMain, recovery::ResetMessage, 0, 0);
+        if (!zoomit::runtime::Permit(zoomit::runtime::Api::Post) || !PostMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(hWnd)))
+            SendMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(hWnd));
     };
     static ULONG_PTR wheelEpoch{};
     static int wheelRemainder{};
@@ -5274,10 +5334,22 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         prevZoomStepTickCount=0;
         forceTransform=true;
         if(!g_AnimateLiveZoom || !dwmEnabled)zoomLevel=requested;
-        SendMessage(hWnd,WM_TIMER,0,0);
+        SendMessage(hWnd, WM_USER_SESSION_TICK,0,0);
         if(requested!=previousTarget)ShowZoomIndicator(requested,hWnd,true);
     };
     switch (message)  {
+#ifdef ZOOMIT_TESTING
+    case WM_TEST_QUERY_TIMERS:
+        return static_cast<LRESULT>(timers.Id(static_cast<unsigned>(lParam)));
+#endif
+    case WM_USER_GET_LIVE_INDICATOR_FACTOR:
+        // A target of 1x while exiting is not an active floor session.
+        return active && !exiting && !resetQueued && g_FailedLiveGeneration!=g_LiveSessionGeneration &&
+            zoomLevel==1.0f && zoomTelescopeTarget==1.0f ? EncodeZoomLevel(1.0f) : 0;
+    case WM_USER_GET_LIVE_VIEWPORT:
+        if (!lParam || !active || resetQueued || g_FailedLiveGeneration == g_LiveSessionGeneration || !zoomit::runtime::ValidViewport(lastSourceRect, monInfo.rcMonitor, zoomLevel)) return 0;
+        *reinterpret_cast<LiveViewport*>(lParam) = {monInfo.rcMonitor, lastSourceRect, lastCursorPos, zoomLevel, g_LiveSessionGeneration};
+        return 1;
     case WM_USER_LIVE_ZOOM_WHEEL:
         if(!g_LiveZoomWheel.Accept(g_hWndMain,wParam) || !active || !IsWindowVisible(hWnd))return 0;
         if(wheelEpoch!=wParam) {wheelEpoch=wParam;wheelRemainder=0;}
@@ -5320,7 +5392,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             // if we're not in presentation mode, kill ourselves after a timeout
             if( !startedInPresentationMode ) {
 
-                SetTimer( hWnd, 1, LIVEZOOM_WINDOW_TIMEOUT, NULL );
+                timers.Start(hWnd, 1, LIVEZOOM_WINDOW_TIMEOUT);
             } 
         }
         break;
@@ -5328,12 +5400,14 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
     case WM_SHOWWINDOW:
         if( wParam == TRUE ) {
             active = true;
+            resetQueued = false; cursorUnavailableSince = 0;
+            ++g_LiveSessionGeneration;
+            timers.StopAll();
             holdRestoredView = false;
 
             // Determine what monitor we're on
             lastCursorPos.x = -1;
-            GetCursorPos( &cursorPos );
-            if (!UpdateMonitorInfo(cursorPos, &monInfo)) {
+            if (!zoomit::runtime::ReadCursor(&cursorPos) || !UpdateMonitorInfo(cursorPos, &monInfo)) {
                 graphicsFailure(L"Lettura monitor LiveZoom"); return 0;
             }
             width = monInfo.rcMonitor.right - monInfo.rcMonitor.left;
@@ -5377,13 +5451,13 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             if( !g_fullScreenWorkaround )
                 if( pMagShowSystemCursor ) pMagShowSystemCursor( FALSE );
 
-            GetCursorPos( &lastCursorPos );
+            lastCursorPos = cursorPos;
             SetCursorPos( lastCursorPos.x, lastCursorPos.y );
 
-            if (!SetTimer(hWnd, 0, ZOOM_LEVEL_STEP_TIME, nullptr)) {
+            if (!timers.Start(hWnd, 0, ZOOM_LEVEL_STEP_TIME)) {
                 graphicsFailure(L"Timer LiveZoom"); return 0;
             }
-            SendMessage(hWnd, WM_TIMER, 0, 0);
+            SendMessage(hWnd, WM_USER_SESSION_TICK, 0, 0);
             ShowZoomIndicator(zoomTelescopeTarget,hWnd,true);
         
         } else {
@@ -5391,7 +5465,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             g_LiveZoomWheel.SetTarget(nullptr,0,0);
             active = false;
 
-            KillTimer( hWnd, 0 );
+            timers.Stop(0);
 
             if( !g_fullScreenWorkaround )
                 if( pMagShowSystemCursor ) pMagShowSystemCursor( TRUE );
@@ -5399,8 +5473,8 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             // Reset the timer to expire two hours from now
             if( g_OsVersion < WIN7_VERSION && !IsPresentationMode()) {
 
-                KillTimer( hWnd, 1 );
-                SetTimer( hWnd, 1, LIVEZOOM_WINDOW_TIMEOUT, NULL );
+                timers.Stop(1);
+                timers.Start(hWnd, 1, LIVEZOOM_WINDOW_TIMEOUT);
             } else {
 
                 DestroyWindow( hWnd );
@@ -5412,6 +5486,12 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         break;
 
     case WM_TIMER:
+    case WM_USER_SESSION_TICK:
+        if (message == WM_TIMER) {
+            const int role = timers.Role(wParam);
+            if (role < 0) return 0;
+            wParam = static_cast<WPARAM>(role);
+        }
         switch( wParam ) {
         case 0: {
             if (!active) return 0;
@@ -5423,7 +5503,20 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                 break;
             }
 
-            GetCursorPos(&cursorPos);
+            if (resetQueued) return 0;
+            if (!zoomit::runtime::ReadCursor(&cursorPos)) {
+                const ULONGLONG now = GetTickCount64();
+                if (!cursorUnavailableSince) cursorUnavailableSince = now;
+                // A protected/input desktop can disappear temporarily: never use stale stack coordinates.
+                if (now - cursorUnavailableSince >= 1500 && !resetQueued) {
+                    resetQueued = true;
+                    if (!zoomit::runtime::Permit(zoomit::runtime::Api::Post) ||
+                        !PostMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(hWnd)))
+                        SendMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(hWnd));
+                }
+                return 0;
+            }
+            cursorUnavailableSince = 0;
             if (holdRestoredView && (cursorPos.x != lastCursorPos.x || cursorPos.y != lastCursorPos.y))
                 holdRestoredView = false;
 
@@ -5615,7 +5708,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         
                 // Kill the timer if one was configured, because now
                 // we're going to go away when they exit presentation mode
-                KillTimer( hWnd, 1 );
+                timers.Stop(1);
             }
         }
         break;
@@ -5628,7 +5721,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             zoomTelescopeStep = resumeZoom >= zoomLevel ? ZOOM_LEVEL_STEP_IN : ZOOM_LEVEL_STEP_OUT;
             prevZoomStepTickCount = 0;
             forceTransform = true;
-            SendMessage(hWnd, WM_TIMER, 0, 0);
+            SendMessage(hWnd, WM_USER_SESSION_TICK, 0, 0);
             ShowZoomIndicator(zoomTelescopeTarget,hWnd,true);
         } else if (!g_AnimateLiveZoom || !dwmEnabled || zoomLevel <= 1) {
             DestroyWindow(hWnd);
@@ -5641,7 +5734,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             // LiveDraw has released its overlay before reaching this transition.
             SendMessage(hWnd, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
             if (!g_fullScreenWorkaround && pMagShowSystemCursor) pMagShowSystemCursor(FALSE);
-            SendMessage(hWnd, WM_TIMER, 0, 0);
+            SendMessage(hWnd, WM_USER_SESSION_TICK, 0, 0);
         }
         return 0;
 
@@ -5650,7 +5743,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         zoomLevel = zoomTelescopeTarget = exiting ? resumeZoom : zoomTelescopeTarget;
         exiting = false;
         forceTransform = true;
-        SendMessage(hWnd, WM_TIMER, 0, 0);
+        SendMessage(hWnd, WM_USER_SESSION_TICK, 0, 0);
         return 0;
 
     case WM_HOTKEY:
@@ -5658,7 +5751,8 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         if(wParam==0 || wParam==1)adjustZoom(wParam==0 ? 1 : -1);
         return 0;
 
-    // NOTE: keyboard and mouse input actually don't get sent to us at all when in live zoom mode
+    // The overlay does not take focus. Its active input hook routes plain Esc here;
+    // Draw/Snip/Options keep their own keyboard handling instead.
     case WM_KEYDOWN:
         switch( wParam ) {
         case VK_ESCAPE:
@@ -5683,8 +5777,8 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         holdRestoredView = false;
         exiting = false;
         forceTransform = false;
-        KillTimer(hWnd, 0);
-        KillTimer(hWnd, 1);
+        timers.Stop(0);
+        timers.Stop(1);
         UnregisterHotKey(hWnd, 0);
         UnregisterHotKey(hWnd, 1);
         if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
@@ -5739,34 +5833,27 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         {
             
 
-            if( lParam != NULL ) {
-
-                lastSourceRect = *reinterpret_cast<RECT *>(lParam);
-            }
+            RECT requestedSource = lParam ? *reinterpret_cast<const RECT*>(lParam) : lastSourceRect;
             const float requestedZoom = DecodeZoomLevel(wParam);
-            if (!std::isfinite(requestedZoom) || requestedZoom < 1 || requestedZoom > ZOOM_LEVEL_MAX) {
-                recovery::client.Serious(L"Fattore LiveZoom non valido", ERROR_INVALID_PARAMETER); return 0;
+            if (!zoomit::runtime::ValidViewport(requestedSource, monInfo.rcMonitor, requestedZoom)) {
+                recovery::client.Serious(L"Vista LiveZoom non valida", ERROR_INVALID_PARAMETER); return 0;
             }
-            exiting = false;
-            forceTransform = false;
-            // A restored viewport stays still until the user moves the pointer or changes zoom.
-            GetCursorPos(&lastCursorPos);
-            holdRestoredView = true;
-            zoomLevel = zoomTelescopeTarget = resumeZoom = requestedZoom;
+            POINT restoredCursor{};
+            if (!zoomit::runtime::ReadCursor(&restoredCursor)) return 0;
             memset(&matrix, 0, sizeof(matrix));
-            matrix.v[0][0] = zoomLevel;
-            matrix.v[0][2] = (static_cast<float>(-lastSourceRect.left) * zoomLevel);
+            matrix.v[0][0] = requestedZoom;
+            matrix.v[0][2] = (-static_cast<float>(requestedSource.left) * requestedZoom);
 
-            matrix.v[1][1] = zoomLevel;
-            matrix.v[1][2] = (static_cast<float>(-lastSourceRect.top) * zoomLevel);
+            matrix.v[1][1] = requestedZoom;
+            matrix.v[1][2] = (-static_cast<float>(requestedSource.top) * requestedZoom);
 
             matrix.v[2][2] = 1.0f;
 
             if( g_fullScreenWorkaround ) {
 
                 if (!pMagSetFullscreenTransform || !pMagSetInputTransform ||
-                    !pMagSetFullscreenTransform(zoomLevel, lastSourceRect.left, lastSourceRect.top) ||
-                    !pMagSetInputTransform(TRUE, &lastSourceRect, &monInfo.rcMonitor)) {
+                    !pMagSetFullscreenTransform(requestedZoom, requestedSource.left, requestedSource.top) ||
+                    !pMagSetInputTransform(TRUE, &requestedSource, &monInfo.rcMonitor)) {
                     graphicsFailure(L"Ripristino trasformazione LiveZoom a schermo intero"); return 0;
                 }
             }
@@ -5776,11 +5863,14 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                     graphicsFailure(L"Ripristino trasformazione LiveZoom"); return 0;
                 }
             }
-            // Keep a currently displayed label aligned with exact recovery/restore factors.
-            // Draw and Snip have already hidden it, so returning from them does not reopen it.
+            // Keep a displayed label aligned with exact recovery/restore factors.
+            // The Main return guard restores a hidden label only for active LiveZoom at 1x.
+            lastSourceRect = requestedSource; lastCursorPos = restoredCursor;
+            exiting = false; forceTransform = false; holdRestoredView = true;
+            zoomLevel = zoomTelescopeTarget = resumeZoom = requestedZoom;
             if(g_ZoomIndicator.Visible())ShowZoomIndicator(requestedZoom,hWnd,true);
+            return TRUE;
         }
-        break;
 
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
@@ -5793,7 +5883,9 @@ LRESULT CALLBACK LiveZoomWndProc(HWND window, UINT message, WPARAM word, LPARAM 
     try { return LiveZoomWndProcImpl(window, message, word, param); }
     catch (...) {
         recovery::client.Serious(L"Errore runtime LiveZoom", ERROR_UNHANDLED_EXCEPTION);
-        PostMessage(g_hWndMain, recovery::ResetMessage, 0, 0);
+        g_FailedLiveGeneration = g_LiveSessionGeneration;
+        if (!PostMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(window)))
+            SendMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(window));
         return message == WM_CREATE ? -1 : 0;
     }
 }

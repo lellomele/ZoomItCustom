@@ -3,3 +3,4 @@ dist/
 *.user
 VERIFICA.txt
 VERIFICA.json
+regression-errors-*/

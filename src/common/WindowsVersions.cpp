@@ -18,7 +18,10 @@ DWORD GetWindowsBuild( DWORD* revision )
 
     RtlGetVersionType pRtlGetVersion = reinterpret_cast<RtlGetVersionType>(GetProcAddress( GetModuleHandleW( L"ntdll.dll" ), "RtlGetVersion" ));
     
-    RTL_OSVERSIONINFOW version;
-    pRtlGetVersion( &version );
-    return version.dwBuildNumber;
+    RTL_OSVERSIONINFOW version{};
+    version.dwOSVersionInfoSize = sizeof(version);
+    if (pRtlGetVersion && pRtlGetVersion(&version) >= 0) return version.dwBuildNumber;
+
+    // Unknown build uses the conservative selection-border fallback.
+    return 0;
 }

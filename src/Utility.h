@@ -12,6 +12,7 @@
 
 RECT ForceRectInBounds( RECT rect, const RECT& bounds );
 UINT GetDpiForWindowHelper( HWND window );
+bool GetMonitorRectFromCursor(RECT& output) noexcept;
 RECT GetMonitorRectFromCursor();
 RECT RectFromPointsMinSize( POINT a, POINT b, LONG minSize );
 int ScaleForDpi( int value, UINT dpi );

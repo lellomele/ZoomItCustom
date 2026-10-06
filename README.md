@@ -19,7 +19,7 @@ Download and extract a [portable package from Releases](https://github.com/lello
 
 The **supervisor** starts ZoomIt Custom for you and stays in the background. Launch it once; there is no need to open the app separately. If the app is already running on its own, exit it first, then launch the supervisor. Exit ZoomIt Custom from its notification-area menu to close both.
 
-After a crash, the supervisor restarts the app and tries to restore the last valid state: mode, magnification, drawing colour and completed annotations. Drawing returns paused; left-click to continue. The unfinished stroke and undo history cannot be restored. If recovery is unavailable, the app returns to the desktop. A second crash within a minute causes a restart on the desktop; a third stops automatic restarts.
+After a crash, the supervisor restarts the app and tries to restore the last valid state: mode, magnification, drawing colour and completed annotations. Drawing returns paused; left-click to continue. The unfinished stroke and undo history cannot be restored. If a recovery image cannot be saved, an earlier completed drawing may be restored. If recovery is unavailable, the app returns to the desktop. A second crash within a minute causes a restart on the desktop; a third stops automatic restarts.
 
 When launched directly, the app still has its internal protections, but you must reopen it yourself after a crash.
 
@@ -51,13 +51,13 @@ Shortcuts can be changed in the options. LiveDraw always uses the configured Dra
 
 Static Zoom freezes the enlarged image. LiveZoom updates it in real time; LiveDraw lets you draw over that live view.
 
-A large translucent zoom factor appears in the lower-right corner of the **primary monitor** for about **1.2 seconds** on entry and after each adjustment. During animations it shows the requested final value. It stays the same size, lets clicks pass through, and disappears before drawing, Snip or copy/save operations. Disable it with **Show zoom factor briefly (Zoom and LiveZoom)** in the **Zoom** tab.
+A large translucent zoom factor appears in the lower-right corner of the **primary monitor** for about **1.2 seconds** on entry and after each adjustment. During animations it shows the requested final value. It stays the same size, lets clicks pass through, and disappears before drawing, Snip or copy/save operations. At **1x in LiveZoom**, it stays visible with lower opacity to show that LiveZoom is still active. It hides during drawing, Snip and options, then returns if LiveZoom is still at 1x. Disable it with **Show zoom factor (Zoom and LiveZoom)** in the **Zoom** tab.
 
 Each mode has its own **Animate zoom in and zoom out** checkbox. In LiveZoom, checking it makes entry, exit and zoom-level changes gradual; leaving it unchecked applies them instantly. The LiveZoom option starts unchecked and is saved independently of the Zoom option.
 
-Choose the initial magnification for both Zoom and LiveZoom in the **Zoom** tab; the current value appears beside the slider. From **1.25x to 4x**, the controls move in **0.25x steps**. In Zoom, use the wheel or Up/Down; in LiveZoom, use Ctrl+Up / Ctrl+Down or Ctrl+mouse wheel when drawing is inactive. Above 4x, the levels are 8x, 16x and 32x. Reducing below 1.25x returns to 1x and keeps LiveZoom active. Further Ctrl+wheel or Ctrl+Down input stays within LiveZoom at that minimum; use the LiveZoom hotkey (Ctrl+2 by default) to exit. Existing initial magnification settings are preserved when upgrading.
+Choose the initial magnification for both Zoom and LiveZoom in the **Zoom** tab; the current value appears beside the slider. From **1.25x to 4x**, the controls move in **0.25x steps**. In Zoom, use the wheel or Up/Down; in LiveZoom, use Ctrl+Up / Ctrl+Down or Ctrl+mouse wheel when drawing is inactive. Above 4x, the levels are 8x, 16x and 32x. Reducing below 1.25x returns to 1x and keeps LiveZoom active. Further Ctrl+wheel or Ctrl+Down input stays within LiveZoom at that minimum; use **Esc** or the LiveZoom hotkey (Ctrl+2 by default) to exit. Existing initial magnification settings are preserved when upgrading.
 
-In LiveZoom, **Ctrl+Up / Ctrl+Down** adjust magnification. **Ctrl+mouse wheel** does the same when drawing is inactive, without also zooming the underlying app. The wheel shortcut is disabled during Draw/LiveDraw, including paused drawing, Snip and options. The wheel without Ctrl keeps its usual action. High-resolution wheel input accumulates to one step per full notch. **Ctrl+3** starts Draw on a frozen image; **Ctrl+Shift+3** starts LiveDraw without freezing the view. **Esc** ends drawing and returns to LiveZoom. **Ctrl+2** exits LiveZoom only when drawing is inactive.
+In LiveZoom, **Ctrl+Up / Ctrl+Down** adjust magnification. **Ctrl+mouse wheel** does the same when drawing is inactive, without also zooming the underlying app. The wheel shortcut is disabled during Draw/LiveDraw, including paused drawing, Snip and options. The wheel without Ctrl keeps its usual action. High-resolution wheel input accumulates to one step per full notch. **Ctrl+3** starts Draw on a frozen image; **Ctrl+Shift+3** starts LiveDraw without freezing the view. **Esc** ends drawing and returns to LiveZoom. When drawing is inactive, **Esc** or **Ctrl+2** exits LiveZoom. Plain Esc is captured only in active LiveZoom; system shortcuts containing Esc keep their normal action.
 
 Mode shortcuts follow these rules, also during zoom animations:
 
@@ -72,6 +72,8 @@ In Draw and LiveDraw, **Ctrl+Z** undoes and **E** clears annotations. The first 
 Snip works on the desktop, in static Zoom, in LiveZoom and in Draw, including paused drawing. It preserves annotations, magnification and the drawing state after capture or cancellation. With LiveZoom it temporarily freezes the image, then restores the live view. Snip is ignored during an unfinished stroke, the timer, or LiveDraw over LiveZoom; it remains available for LiveDraw on the desktop. **Ctrl+Shift+5** saves a PNG under the same rules. When saving, choose **Zoomed PNG** for the displayed size or **Actual size PNG** to remove the magnification.
 
 ## If something goes wrong
+
+If the active display layout becomes incompatible or essential graphics resources are unavailable, the affected mode may end so you can return to the desktop with the mouse pointer visible. Activate the mode again to continue. A failed PNG save leaves any existing destination file unchanged.
 
 Reports are created **only for crashes or serious errors**, never during normal use. To find them, paste the following path into File Explorer or the Windows Run dialog:
 

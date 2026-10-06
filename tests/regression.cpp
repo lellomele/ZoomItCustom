@@ -4,7 +4,9 @@
 #include <chrono>
 #include <stdexcept>
 #include <functional>
+#include "fixture.h"
 void require(bool condition, const char* message) {
+    RethrowTestCallbackFailure();
     if(!condition) throw std::runtime_error(message);
 }
 void pump(DWORD milliseconds) {
@@ -16,6 +18,7 @@ void pump(DWORD milliseconds) {
         }
         Sleep(1);
     } while(GetTickCount64()<end);
+    RethrowTestCallbackFailure();
 }
 void ActivateTestHost(HWND host) {
     // Maintain an owned background under active app windows. Raising the host must
@@ -52,17 +55,23 @@ CURSORINFO ReadOwnedNormalPointer(HWND host,const char* context) {
     // Process the owned window's normal cursor event synchronously, preserving the
     // immediate toggle tests without depending on another application's hover cursor.
     SendMessage(host,WM_SETCURSOR,reinterpret_cast<WPARAM>(host),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
-    CURSORINFO cursor{sizeof(cursor)};BOOL read=GetCursorInfo(&cursor);
+    CURSORINFO cursor{};
+    const auto probe=[&] {cursor={sizeof(CURSORINFO)};return GetCursorInfo(&cursor);};
+    BOOL read=probe();DWORD error=read ? ERROR_SUCCESS : GetLastError();
     // Windows may temporarily replace a visible arrow with its process-startup feedback.
-    // Wait only for that documented system cursor, never for a hidden or drawing cursor.
+    // A native query can also fail transiently while that known feedback ends.
+    // Never retry a successfully read hidden or drawing cursor.
     const HCURSOR startup=LoadCursor(nullptr,IDC_APPSTARTING);
+    bool startupObserved=read && (cursor.flags&CURSOR_SHOWING) && cursor.hCursor==startup;
     const ULONGLONG feedbackDeadline=GetTickCount64()+3500;
-    while(read && (cursor.flags&CURSOR_SHOWING) && cursor.hCursor==startup && GetTickCount64()<feedbackDeadline) {
+    while(GetTickCount64()<feedbackDeadline &&
+          ((read && (cursor.flags&CURSOR_SHOWING) && cursor.hCursor==startup) ||
+           (!read && startupObserved && error==ERROR_INVALID_PARAMETER))) {
         pump(10);
         SendMessage(host,WM_SETCURSOR,reinterpret_cast<WPARAM>(host),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
-        read=GetCursorInfo(&cursor);
+        read=probe();error=read ? ERROR_SUCCESS : GetLastError();
+        startupObserved|=read && (cursor.flags&CURSOR_SHOWING) && cursor.hCursor==startup;
     }
-    const DWORD error=read ? ERROR_SUCCESS : GetLastError();
     if(!read || !(cursor.flags&CURSOR_SHOWING) || cursor.hCursor!=LoadCursor(nullptr,IDC_ARROW)) {
         POINT actual{};GetCursorPos(&actual);const HWND surface=WindowFromPoint(actual);
         wchar_t surfaceClass[96]{};GetClassNameW(surface,surfaceClass,_countof(surfaceClass));
@@ -76,6 +85,17 @@ CURSORINFO ReadOwnedNormalPointer(HWND host,const char* context) {
     require(read!=FALSE,context);
     return cursor;
 }
+// Only alter queried geometry; no test changes the physical display topology.
+bool g_TestChangedMonitorGeometry{};
+BOOL WINAPI ScenarioMonitorInfo(HMONITOR monitor,LPMONITORINFO information) {
+    if (!GetMonitorInfoA(monitor,information)) return FALSE;
+    if (g_TestChangedMonitorGeometry) {
+        information->rcMonitor.right-=64;
+        information->rcWork.right=(std::min)(information->rcWork.right,information->rcMonitor.right);
+    }
+    return TRUE;
+}
+
 bool cancelSnip = false;
 void CALLBACK SelectTestRegion(HWND, UINT, UINT_PTR timer, DWORD) {
     HWND selection = FindWindow(L"ZoomitSelectRectangle",nullptr);
@@ -99,7 +119,7 @@ bool verifyAnimationCancel=false;
 bool saveAnimationOptions=false;
 bool saveLiveAnimation=false;
 bool saveZoomAnimation=false;
-INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+INT_PTR TestOptionsProcImpl(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_TIMER && wParam == 97) {
         KillTimer(dialog, 97);
         HWND tabs=GetDlgItem(dialog,IDC_TAB);
@@ -155,13 +175,13 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
                 (g_AnimateZoom ? BST_CHECKED : BST_UNCHECKED);
         wchar_t title[128]{}, version[64]{}, copyright[256]{}, lastTab[32]{};
         GetWindowText(dialog,title,_countof(title));
-        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.9")==0;
+        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.2.0")==0;
         TCITEM item{};item.mask=TCIF_TEXT;item.pszText=lastTab;item.cchTextMax=_countof(lastTab);
         TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),ABOUT_PAGE,&item);
         optionsValid &= wcscmp(lastTab,L"About")==0;
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
-        optionsValid &= wcscmp(version,L"Version 1.1.9")==0 &&
+        optionsValid &= wcscmp(version,L"Version 1.2.0")==0 &&
                         wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr;
         optionsValid &= IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_REPOSITORY)) &&
                         IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_LICENSE));
@@ -176,8 +196,12 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
     return result;
 }
 
+INT_PTR CALLBACK TestOptionsProc(HWND dialog,UINT message,WPARAM word,LPARAM param) noexcept {
+    return TestDialogBoundary(dialog,[&]{return TestOptionsProcImpl(dialog,message,word,param);});
+}
+
 struct LiveAnimationResults {
-    size_t immediateCases{}, animatedCases{}, reverseEvents{}, setZoomCases{};
+    size_t immediateCases{}, animatedCases{}, reverseEvents{}, setZoomCases{}, observedFrames{};
     size_t drawCases{}, snipCases{}, resetCases{}, optionsCases{}, registryCases{}, zoomKeyCases{}, leakCycles{};
     DWORD gdiBefore{}, gdiAfter{}, userBefore{}, userAfter{};
 };
@@ -256,6 +280,46 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
                   "Animated LiveZoom entry must settle at the selected zoom factor");
         nativeLevel();
     };
+    auto observeProgress=[&](float previous,bool increasing,float lower,float upper,const char* context) {
+        struct Sample {UINT message;ULONGLONG elapsed;float factor;bool alive,visible;};
+        std::array<Sample,16> samples{};size_t count{};
+        const HWND expected=g_hWndLiveZoom;const ULONGLONG started=GetTickCount64(),deadline=started+2500;
+        bool progressed=false;
+        // Observe after each dispatched event. A slow native paint cannot cause
+        // this fixture to exhaust an entire animation before sampling its frame.
+        while(GetTickCount64()<deadline && IsWindow(expected) && g_hWndLiveZoom==expected) {
+            MSG message{};
+            if(PeekMessage(&message,nullptr,0,0,PM_REMOVE)) {
+                if(message.message!=WM_QUIT){TranslateMessage(&message);DispatchMessage(&message);}
+                RethrowTestCallbackFailure();
+                const bool alive=IsWindow(expected) && g_hWndLiveZoom==expected;
+                const float factor=alive ? level() : 0;
+                const bool visible=alive && IsWindowVisible(expected);
+                samples[count++%samples.size()]={message.message,GetTickCount64()-started,factor,alive,visible};
+                if(visible && factor>lower && factor<upper && (increasing ? factor>previous : factor<previous)) {
+                    nativeLevel();progressed=true;++results.observedFrames;break;
+                }
+            } else Sleep(1);
+        }
+        if(!progressed) {
+            std::cerr<<"Animation observation failed: "<<context<<" fullscreen="<<g_fullScreenWorkaround
+                     <<" previous="<<previous<<" bounds="<<lower<<","<<upper<<" elapsed_ms="<<GetTickCount64()-started<<"\n";
+            const size_t available=(std::min)(count,samples.size());
+            for(size_t i=count-available;i<count;++i) {
+                const auto& sample=samples[i%samples.size()];
+                std::cerr<<"  message="<<sample.message<<" elapsed_ms="<<sample.elapsed<<" factor="<<sample.factor
+                         <<" alive="<<sample.alive<<" visible="<<sample.visible<<"\n";
+            }
+        }
+        require(progressed,context);
+    };
+    auto beginExit=[&] {
+        const float before=level();toggle();
+        require(IsWindowVisible(g_hWndLiveZoom) && level()>1 && level()<before,
+                "Checked LiveZoom exit must synchronously publish an intermediate factor without instantly closing");
+        nativeLevel();const float firstExitFrame=level();
+        observeProgress(firstExitFrame,false,1,before,"LiveZoom exit must progress through another real intermediate native frame");
+    };
     auto close=[&] {
         toggle();
         waitUntil([] {return !IsWindow(g_hWndLiveZoom);},"Animated LiveZoom exit must finish and destroy the magnifier");
@@ -316,21 +380,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
     // Exercise the actual OK/persistence path with all HKCU operations redirected
     // inside this process. Startup and application preferences stay in the fixture.
     {
-        const std::wstring fixturePath=L"Software\\ZoomItCustom\\AnimationUi_"+std::to_wstring(GetCurrentProcessId());
-        HKEY fixture{};
-        require(RegCreateKeyExW(HKEY_CURRENT_USER,fixturePath.c_str(),0,nullptr,0,KEY_ALL_ACCESS,
-                               nullptr,&fixture,nullptr)==ERROR_SUCCESS,"Create isolated Options registry fixture");
-        struct OverrideCleanup {
-            std::wstring path;HKEY key{};bool active{};
-            ~OverrideCleanup() {
-                if(active) RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);
-                if(key) RegCloseKey(key);
-                RegDeleteTreeW(HKEY_CURRENT_USER,path.c_str());
-            }
-        } cleanup{fixturePath,fixture};
-        require(RegOverridePredefKey(HKEY_CURRENT_USER,fixture)==ERROR_SUCCESS,
-                "Redirect Options registry operations inside this test process");
-        cleanup.active=true;
+        // Options persistence stays inside the process-wide HKCU fixture.
         const DWORD keys[]{g_ToggleKey,g_LiveZoomToggleKey,g_DrawToggleKey,g_BreakToggleKey,g_SnipToggleKey};
         const BOOLEAN tray=g_ShowTrayIcon;
         auto restore=zoomit::OnExit([&] {
@@ -386,15 +436,9 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         require(IsWindowVisible(g_hWndLiveZoom) && level()>1 && level()<target,
                 "Checked LiveZoom animation must visibly enter through an intermediate zoom factor");
         nativeLevel();
-        const float first=level();pump(35);
-        require(IsWindow(g_hWndLiveZoom) && level()>first && level()<target,
-                "LiveZoom entry must progress gradually instead of jumping to the selected factor");
-        settle();toggle();
-        require(IsWindowVisible(g_hWndLiveZoom),"Checked LiveZoom exit must remain visible while zooming out");
-        pump(35);
-        require(IsWindow(g_hWndLiveZoom) && level()>1 && level()<target,
-                "LiveZoom exit must visibly pass through an intermediate zoom factor");
-        nativeLevel();
+        const float first=level();
+        observeProgress(first,true,1,target,"LiveZoom entry must progress through another real intermediate native frame");
+        settle();beginExit();
         waitUntil([] {return !IsWindow(g_hWndLiveZoom);},"Animated exit must reach the desktop");
         cursorVisible();++results.animatedCases;
 
@@ -414,7 +458,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);
         settle();++results.zoomKeyCases;
-        toggle();pump(35);
+        beginExit();
         require(IsWindow(g_hWndLiveZoom),"Zoom command reversal must begin during animated exit");
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);
         waitUntil([&] {return IsWindow(g_hWndLiveZoom) && level()==8;},
@@ -423,7 +467,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
 
         // Reverse an exit without replacing its window or retaining a stale destroy request.
         prepare(fullscreen);toggle();settle();
-        const HWND exiting=g_hWndLiveZoom;toggle();pump(35);
+        const HWND exiting=g_hWndLiveZoom;beginExit();
         require(IsWindow(exiting) && level()<target,"Reversal case must start during a real exit animation");
         toggle();++results.reverseEvents;
         require(g_hWndLiveZoom==exiting && IsWindowVisible(exiting),
@@ -434,7 +478,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         prepare(fullscreen);toggle();settle();
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);
         require(level()>3.75f && level()<target,"Different-target reversal must start during animated factor reduction");
-        toggle();pump(25);toggle();++results.reverseEvents;
+        beginExit();toggle();++results.reverseEvents;
         waitUntil([&] {return IsWindow(g_hWndLiveZoom) && level()==3.75f;},
                   "Exit reversal must restore the requested lower factor instead of the intermediate frame");
         nativeLevel();close();
@@ -450,7 +494,8 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         // Recovery and Draw use this production message to install an exact, stable factor.
         for(bool exitingPhase:{false,true}) {
             prepare(fullscreen);toggle();
-            if(exitingPhase) {settle();toggle();pump(35);}
+            if(exitingPhase) {settle();beginExit();}
+            else {require(IsWindowVisible(g_hWndLiveZoom) && level()>1 && level()<target,"Transition operation must begin during a real entry frame");nativeLevel();}
             const HWND live=g_hWndLiveZoom;
             const float requested=exitingPhase ? 2.5f : 2.25f;
             SendMessage(live,WM_USER_SET_ZOOM,EncodeZoomLevel(requested),0);pump(450);
@@ -461,7 +506,8 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         for(bool liveDraw:{false,true}) {
             for(bool exitingPhase:{false,true}) {
                 prepare(fullscreen);toggle();
-                if(exitingPhase) {settle();toggle();pump(35);}
+                if(exitingPhase) {settle();beginExit();}
+            else {require(IsWindowVisible(g_hWndLiveZoom) && level()>1 && level()<target,"Transition operation must begin during a real entry frame");nativeLevel();}
                 SendMessage(g_hWndMain,WM_HOTKEY,liveDraw ? LIVE_DRAW_HOTKEY : DRAW_HOTKEY,0);pump(60);
                 require(IsWindowVisible(g_hWndMain) && (mode()&3)==3,
                         "Draw entered during a transition must activate its drawing canvas");
@@ -479,7 +525,8 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         }
         for(bool exitingPhase:{false,true}) {
             prepare(fullscreen);toggle();
-            if(exitingPhase) {settle();toggle();pump(35);}
+            if(exitingPhase) {settle();beginExit();}
+            else {require(IsWindowVisible(g_hWndLiveZoom) && level()>1 && level()<target,"Transition operation must begin during a real entry frame");nativeLevel();}
             cancelSnip=false;SetTimer(nullptr,0,15,SelectTestRegion);
             SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0);pump(60);
             require(g_TestSnipBitmap && IsWindowVisible(g_hWndLiveZoom) && !(mode()&1) && level()==target,
@@ -489,7 +536,8 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         }
         for(bool exitingPhase:{false,true}) {
             prepare(fullscreen);toggle();
-            if(exitingPhase) {settle();toggle();pump(35);}
+            if(exitingPhase) {settle();beginExit();}
+            else {require(IsWindowVisible(g_hWndLiveZoom) && level()>1 && level()<target,"Transition operation must begin during a real entry frame");nativeLevel();}
             SendMessage(g_hWndMain,recovery::ResetMessage,0,0);
             require(!IsWindow(g_hWndLiveZoom) && !IsWindowVisible(g_hWndMain) && !(mode()&1),
                     "Forced runtime recovery must cancel animations and return to the desktop synchronously");
@@ -508,7 +556,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
     const bool resourceDiagnostics=GetEnvironmentVariableW(L"ZOOMIT_TEST_ANIMATION_RESOURCE_DIAGNOSTICS",
                                                             diagnosticFlag,_countof(diagnosticFlag))!=0;
     for(int cycle=0;cycle<8;++cycle) {
-        prepare((cycle%2)!=0);toggle();settle();toggle();pump(25);toggle();settle();close();
+        prepare((cycle%2)!=0);toggle();settle();beginExit();toggle();settle();close();
         ++results.leakCycles;
         const ResourceReading reading{GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS),
                                       GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS)};
@@ -548,7 +596,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
 void PrintLiveAnimationResults(const LiveAnimationResults& result) {
     std::cout<<"{\"passed\":true,\"immediate_cases\":"<<result.immediateCases
         <<",\"animated_cases\":"<<result.animatedCases<<",\"reverse_events\":"<<result.reverseEvents
-        <<",\"set_zoom_cases\":"<<result.setZoomCases<<",\"draw_transition_cases\":"<<result.drawCases
+        <<",\"set_zoom_cases\":"<<result.setZoomCases<<",\"observed_intermediate_native_frames\":"<<result.observedFrames<<",\"draw_transition_cases\":"<<result.drawCases
         <<",\"snip_transition_cases\":"<<result.snipCases<<",\"reset_transition_cases\":"<<result.resetCases
         <<",\"options_cases\":"<<result.optionsCases<<",\"registry_cases\":"<<result.registryCases
         <<",\"zoom_key_cases\":"<<result.zoomKeyCases<<",\"leak_cycles\":"<<result.leakCycles<<",\"gdi_before\":"<<result.gdiBefore
@@ -558,15 +606,15 @@ void PrintLiveAnimationResults(const LiveAnimationResults& result) {
 
 
 struct ModePolicyResults {
-    size_t states{}, ignoredKeys{}, snipCases{}, modalKeys{}, registrationCases{}, animationCases{}, guiCases{}, resetCases{}, allocationCases{}, unavailableApiCases{}, duplicateExitCases{}, lateExitCases{}, penContactCases{};
+    size_t states{}, ignoredKeys{}, snipCases{}, modalKeys{}, registrationCases{}, animationCases{}, guiCases{}, resetCases{}, allocationCases{}, unavailableApiCases{}, duplicateExitCases{}, lateExitCases{}, penContactCases{}, sequenceCases{}, topologyCases{}, timerIdentityCases{}, stagedGraphicsCases{}, runtimeFailureCases{};
 };
 std::function<void()> g_PolicyModalCheck;
 std::function<void()> g_PolicyOptionsCheck;
 RECT g_PolicySelectionRect{20,20,100,100};
 void CheckPolicySaveDialog() {
-    if(g_PolicyModalCheck) g_PolicyModalCheck();
+    TestCallbackBoundary(nullptr,0,[&]{if(g_PolicyModalCheck) g_PolicyModalCheck();});
 }
-void CALLBACK SelectPolicyRegion(HWND window, UINT message, UINT_PTR timer, DWORD time) {
+void SelectPolicyRegionImpl(HWND window, UINT message, UINT_PTR timer, DWORD time) {
     HWND selection=FindWindow(L"ZoomitSelectRectangle",nullptr);
     DWORD owner{};
     if(!selection || !GetWindowThreadProcessId(selection,&owner) || owner!=GetCurrentProcessId()) return;
@@ -579,7 +627,7 @@ void CALLBACK SelectPolicyRegion(HWND window, UINT message, UINT_PTR timer, DWOR
         SendMessage(selection,WM_LBUTTONUP,0,MAKELPARAM(g_PolicySelectionRect.right,g_PolicySelectionRect.bottom));
     }
 }
-INT_PTR CALLBACK PolicyOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+INT_PTR PolicyOptionsProcImpl(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
     if(message==WM_TIMER && wParam==98) {
         KillTimer(dialog,98);
         if(g_PolicyOptionsCheck) g_PolicyOptionsCheck();
@@ -590,6 +638,15 @@ INT_PTR CALLBACK PolicyOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPA
     const auto result=OptionsProc(dialog,message,wParam,lParam);
     if(message==WM_INITDIALOG) SetTimer(dialog,98,25,nullptr);
     return result;
+}
+
+void CALLBACK SelectPolicyRegion(HWND window,UINT message,UINT_PTR timer,DWORD time) noexcept {
+    HWND selection=FindWindowW(L"ZoomitSelectRectangle",nullptr);
+    DWORD owner{};if (!selection || !GetWindowThreadProcessId(selection,&owner) || owner!=GetCurrentProcessId()) return;
+    TestCallbackBoundary(selection,WM_KEYDOWN,[&]{SelectPolicyRegionImpl(window,message,timer,time);});
+}
+INT_PTR CALLBACK PolicyOptionsProc(HWND dialog,UINT message,WPARAM word,LPARAM param) noexcept {
+    return TestDialogBoundary(dialog,[&]{return PolicyOptionsProcImpl(dialog,message,word,param);});
 }
 
 ModePolicyResults RunModePolicyRegression(HWND host) {
@@ -628,7 +685,7 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
     require(GetClassLongPtrW(host,GCLP_HBRBACKGROUND)==whiteBackground,
             "Native test host must retain a deterministic white background through modal repaints");
     RedrawWindow(host,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);
-    ComputerGraphicsInit graphics;
+    require(g_GraphicsInit.Ready(),"Mode-policy graphics must use the application initializer");
     auto flushNativeFrames=[] {
         const auto flush=reinterpret_cast<HRESULT(WINAPI*)()>(GetProcAddress(GetModuleHandleW(L"dwmapi.dll"),"DwmFlush"));
         const HRESULT first=flush ? flush() : HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
@@ -1022,13 +1079,42 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
         auto restorePenExtraInfo=zoomit::OnExit([&] {SetMessageExtraInfo(priorExtraInfo);});
         stroke(false);g_PenDown=TRUE;
         require((mode()&23)==7,"Pen-contact model must start with a live drawing stroke");
-        SendMessage(g_hWndMain,WM_TIMER,3,0);
+        SendMessage(g_hWndMain,WM_USER_SESSION_TICK,3,0);
         SendPenMessage(g_hWndMain,WM_MOUSEMOVE,MAKELPARAM(360,340));
         SetMessageExtraInfo(priorExtraInfo);
         require((mode()&23)==7,"Timer and movement mouse-release repair must preserve a pen contact that is still down");
-        g_PenDown=FALSE;SendMessage(g_hWndMain,WM_TIMER,3,0);
+        g_PenDown=FALSE;SendMessage(g_hWndMain,WM_USER_SESSION_TICK,3,0);
         require((mode()&23)==3,"Idle timer must complete the missed stationary release after pen contact ends");
         ++results.penContactCases;clean();
+    }
+
+    // Simulated pen contact resumes a paused LiveDraw ring through the intentional
+    // ReleaseCapture callback without losing contact or the active pointer identity.
+    {
+        clean();press(LIVE_DRAW_HOTKEY);pump(20);stroke(true);paused();
+        const LPARAM previousExtra=GetMessageExtraInfo();const BOOLEAN previousDown=g_PenDown;
+        const auto pointerType=pGetPointerType;const auto penInfo=pGetPointerPenInfo;
+        auto restorePen=zoomit::OnExit([&]{SetMessageExtraInfo(previousExtra);g_PenDown=previousDown;pGetPointerType=pointerType;pGetPointerPenInfo=penInfo;});
+        pGetPointerType=nullptr;pGetPointerPenInfo=nullptr;
+        SendMessage(g_hWndMain,WM_POINTERDOWN,7,MAKELPARAM(340,340));
+        require(g_PenDown && (mode()&23)==7,"Pen down on the paused ring must resume tracing without capture-release callbacks clearing the contact");++results.penContactCases;
+        const auto firstContact=snapshot();
+        SendMessage(g_hWndMain,WM_POINTERDOWN,8,MAKELPARAM(330,330));
+        SendMessage(g_hWndMain,WM_POINTERDOWN,7,MAKELPARAM(330,330));
+        SendMessage(g_hWndMain,WM_POINTERUP,8,MAKELPARAM(330,330));
+        same(firstContact,"A second contact, duplicate down and foreign pointer-up must not replace the active pen stroke");
+        require(g_PenDown && (mode()&23)==7,"Foreign pen events must preserve the original active pointer contact");++results.penContactCases;
+        SendMessage(g_hWndMain,WM_USER_SESSION_TICK,3,0);
+        SendMessage(g_hWndMain,WM_POINTERUPDATE,7,MAKELPARAM(360,340));
+        require(g_PenDown && (mode()&23)==7,"The same simulated pen contact must survive a tracking tick and pointer update");++results.penContactCases;
+        SendMessage(g_hWndMain,WM_POINTERUP,7,MAKELPARAM(360,340));
+        require(!g_PenDown && (mode()&23)==17,"A matching pen up must finish the stroke and return to the paused ring");
+        SendMessage(g_hWndMain,WM_POINTERDOWN,7,MAKELPARAM(340,345));
+        require(g_PenDown && (mode()&23)==7,"A second pen contact must resume drawing from the paused ring again");
+        SendMessage(g_hWndMain,WM_POINTERUP,7,MAKELPARAM(360,345));
+        require(!g_PenDown && (mode()&23)==17,"Completing the second pen contact must preserve the reusable paused drawing state");++results.penContactCases;clean();
+        SendMessage(g_hWndMain,WM_POINTERDOWN,7,MAKELPARAM(340,340));
+        require(!g_PenDown && mode()==0 && !IsWindowVisible(g_hWndMain),"A delayed pointer-down on the idle desktop must not resurrect contact or drawing state");++results.penContactCases;
     }
 
     // An unavailable optional magnifier filter must not prevent desktop LiveDraw or its cleanup.
@@ -1093,6 +1179,146 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
     }
     g_fullScreenWorkaround=FALSE;
 
+    // Real queued timer identities must not operate a later canvas or magnifier.
+    {
+        clean();press(LIVE_DRAW_HOTKEY);pump(20);
+        const UINT_PTR oldMain=static_cast<UINT_PTR>(SendMessage(g_hWndMain,WM_TEST_QUERY_TIMERS,0,3));
+        require(oldMain>=0x4000,"LiveDraw must expose the current native canvas timer identity");
+        clean();press(LIVE_DRAW_HOTKEY);pump(20);
+        const UINT_PTR current=static_cast<UINT_PTR>(SendMessage(g_hWndMain,WM_TEST_QUERY_TIMERS,0,3));
+        require(current && current!=oldMain,"A new drawing session must use a fresh timer identity");
+        const auto before=snapshot();SendMessage(g_hWndMain,WM_TIMER,oldMain,0);
+        same(before,"A late native canvas timer must leave the next drawing session unchanged");++results.timerIdentityCases;clean();
+        press(LIVE_HOTKEY);pump(40);
+        const UINT_PTR oldLive=static_cast<UINT_PTR>(SendMessage(g_hWndLiveZoom,WM_TEST_QUERY_TIMERS,0,0));
+        require(oldLive>=0x4000,"LiveZoom must expose its current magnifier timer identity");
+        clean();press(LIVE_HOTKEY);pump(40);
+        const UINT_PTR newLive=static_cast<UINT_PTR>(SendMessage(g_hWndLiveZoom,WM_TEST_QUERY_TIMERS,0,0));
+        require(newLive && newLive!=oldLive,"A new magnifier must use a fresh timer identity even if Windows reuses its handle");
+        const auto liveBefore=snapshot();SendMessage(g_hWndLiveZoom,WM_TIMER,oldLive,0);
+        same(liveBefore,"A timer left by an old magnifier must never pan or close a new magnifier");++results.timerIdentityCases;clean();
+    }
+
+    // Deterministic cross-feature sequences retain annotations through ignored keys,
+    // partial wheel input, pauses, capture cancellation and explicit mode exits.
+    for(bool layered:{false,true}) {
+        clean();g_AnimateLiveZoom=FALSE;SetInitialZoomIndex(3);press(LIVE_HOTKEY);pump(30);
+        const float original=snapshot().liveLevel;
+        const ULONG_PTR obsolete=g_LiveZoomWheel.Epoch();
+        PostMessage(g_hWndMain,WM_USER_LIVE_ZOOM_WHEEL,obsolete,60);
+        const WPARAM drawingAction=layered ? LIVE_DRAW_HOTKEY : DRAW_HOTKEY;
+        press(drawingAction);pump(30);stroke(true);paused();
+        const auto pausedBefore=snapshot();
+        PostMessage(g_hWndMain,WM_USER_LIVE_ZOOM_WHEEL,obsolete,60);pump(15);
+        same(pausedBefore,"Partial wheel requests from LiveZoom must not survive transition into suspended drawing");
+        for(WPARAM action:{WPARAM(ZOOM_HOTKEY),WPARAM(LIVE_HOTKEY),WPARAM(BREAK_HOTKEY)})ignore(action);
+        if(layered)ignore(SNIP_HOTKEY);else snip(1);
+        SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(340,340));
+        SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(340,340));
+        require((mode()&23)==3,"Left click must resume the same annotation canvas after the complex pause sequence");
+        stroke(true);ignore(ZOOM_HOTKEY);paused();
+        SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,0);SendMessage(g_hWndMain,WM_RBUTTONUP,0,0);pump(40);
+        require(mode()==0 && IsWindowVisible(g_hWndLiveZoom) && snapshot().liveLevel==original,
+                "Explicit second right click must finish drawing and retain the original LiveZoom factor");
+        snip(1);
+        PostMessage(g_hWndMain,WM_USER_LIVE_ZOOM_WHEEL,obsolete,WHEEL_DELTA);pump(15);
+        require(snapshot().liveLevel==original,"Old wheel requests must remain rejected after drawing and Snip finish");
+        ++results.sequenceCases;clean();
+    }
+
+    // Simulated display messages exercise safety paths; physical clone displays and
+    // mixed-DPI hardware still require a separate Windows integration environment.
+    {
+        const auto monitorApi=pGetMonitorInfo;
+        auto restoreMonitor=zoomit::OnExit([&]{pGetMonitorInfo=monitorApi;g_TestChangedMonitorGeometry=false;});
+        pGetMonitorInfo=ScenarioMonitorInfo;
+        for(WPARAM action:{WPARAM(ZOOM_HOTKEY),WPARAM(DRAW_HOTKEY),WPARAM(LIVE_HOTKEY),WPARAM(LIVE_DRAW_HOTKEY)}) {
+            clean();press(action);pump(30);
+            const auto sameLayout=snapshot();
+            SendMessage(g_hWndMain,WM_DISPLAYCHANGE,32,MAKELPARAM(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN)));
+            same(sameLayout,"A display notification with unchanged queried geometry must preserve the current mode");++results.topologyCases;
+            SendMessage(g_hWndMain,WM_DPICHANGED,MAKEWPARAM(96,96),0);
+            same(sameLayout,"A DPI notification with unchanged logical geometry must not discard annotations");++results.topologyCases;
+            g_TestChangedMonitorGeometry=true;
+            SendMessage(g_hWndMain,WM_DISPLAYCHANGE,32,0);
+            g_TestChangedMonitorGeometry=false;
+            require(mode()==0 && !IsWindowVisible(g_hWndMain) && !IsWindow(g_hWndLiveZoom) && GetCapture()!=g_hWndMain,
+                    "Obsolete display geometry must synchronously release drawing, magnification and capture");
+            ReadOwnedNormalPointer(host,"Changed simulated monitor geometry");++results.topologyCases;
+        }
+        for(UINT cancellation:{WM_CANCELMODE,WM_CAPTURECHANGED}) {
+            clean();press(LIVE_DRAW_HOTKEY);pump(20);stroke(false);
+            require((mode()&7)==7,"Capture cancellation fixture must have an unfinished stroke");
+            SendMessage(g_hWndMain,cancellation,0,reinterpret_cast<LPARAM>(host));
+            require((mode()&7)==3,"Losing capture or cancelling a mode must terminate the unfinished stroke safely");
+            ignore(ZOOM_HOTKEY);stroke(true);paused();
+            require((mode()&23)==17,"Drawing must remain usable after a cancelled stroke");++results.topologyCases;clean();
+        }
+    }
+
+    // Fail each graphics preparation stage after earlier allocations have succeeded.
+    // This tests rollback and ownership, not only an early refusal before allocation.
+    {
+        using zoomit::runtime::Api;
+        auto clearFailures=zoomit::OnExit([]{zoomit::runtime::Clear();});
+        clean();const DWORD directGdi=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+        for(unsigned stage=1;stage<=zoomit::GraphicsSession::PreparationChecks;++stage) {
+            zoomit::runtime::FailAt(Api::Graphics,stage);
+            {
+                zoomit::GraphicsSession candidate;
+                require(!candidate.Prepare({0,0,192,128},5,COLOR_RED),"Every injected graphics preparation stage must fail deterministically");
+                require(zoomit::runtime::Calls(Api::Graphics)==stage,"The requested partial preparation failure must actually be reached");
+            }
+            zoomit::runtime::Clear();
+            require(GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)==directGdi,"Every partially prepared graphics session must release all owned GDI resources");++results.stagedGraphicsCases;
+        }
+        for(bool live:{false,true})for(WPARAM action:{WPARAM(DRAW_HOTKEY),WPARAM(LIVE_DRAW_HOTKEY)}) {
+            clean();if(live){press(LIVE_HOTKEY);pump(30);}
+            for(unsigned stage=1;stage<=zoomit::GraphicsSession::PreparationChecks;++stage) {
+                const auto before=snapshot();const DWORD resources=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+                zoomit::runtime::FailAt(Api::Graphics,stage);press(action);
+                const unsigned reached=zoomit::runtime::Calls(Api::Graphics);zoomit::runtime::Clear();
+                require(reached>=stage,"Drawing entry must exercise the injected graphics preparation stage");
+                require(mode()==0 && !IsWindowVisible(g_hWndMain) && !SendMessage(g_hWndMain,WM_TEST_QUERY_CANVAS,0,0) && GetCapture()!=g_hWndMain,
+                        "Partial drawing preparation failure must never publish a canvas or take mouse capture");
+                if(live)same(before,"Every failed partial drawing entry must preserve the preceding LiveZoom session",true);
+                else require(!IsWindow(g_hWndLiveZoom),"Failed desktop drawing preparation must remain idle");
+                require(GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)<=resources,"Partial drawing entry failures must not accumulate GDI resources");++results.stagedGraphicsCases;
+            }
+            press(action);pump(20);stroke(true);
+            require((mode()&3)==3,"Drawing must work again immediately after the last staged failure is removed");clean();
+        }
+        for(Api api:{Api::Cursor,Api::Monitor})for(WPARAM action:{WPARAM(ZOOM_HOTKEY),WPARAM(DRAW_HOTKEY),WPARAM(LIVE_HOTKEY),WPARAM(LIVE_DRAW_HOTKEY)}) {
+            clean();zoomit::runtime::FailAlways(api);press(action);zoomit::runtime::Clear();
+            require(mode()==0 && !IsWindowVisible(g_hWndMain) && !IsWindow(g_hWndLiveZoom) && GetCapture()!=g_hWndMain,
+                    "Unavailable cursor or monitor information must reject new modes without a half-created overlay");++results.runtimeFailureCases;
+        }
+        for(Api api:{Api::Cursor,Api::Monitor}) {
+            clean();press(LIVE_HOTKEY);pump(30);const auto before=snapshot();
+            zoomit::runtime::FailAlways(api);SendMessage(g_hWndLiveZoom,WM_USER_SESSION_TICK,0,0);zoomit::runtime::Clear();
+            same(before,"A transient cursor or monitor query failure must skip an active LiveZoom frame without corrupting its view");++results.runtimeFailureCases;clean();
+        }
+        g_AnimateZoom=TRUE;SetInitialZoomIndex(3);zoomit::runtime::FailAt(Api::Timer,1);press(ZOOM_HOTKEY);zoomit::runtime::Clear();
+        require((mode()&3)==1 && DecodeZoomLevel(snapshot().level)==2.0f,"A denied static animation timer must degrade to the complete requested zoom");++results.runtimeFailureCases;clean();g_AnimateZoom=FALSE;
+        for(WPARAM action:{WPARAM(LIVE_HOTKEY),WPARAM(LIVE_DRAW_HOTKEY)}) {
+            zoomit::runtime::FailAt(Api::Timer,1);press(action);zoomit::runtime::Clear();
+            require(mode()==0 && !IsWindowVisible(g_hWndMain) && !IsWindow(g_hWndLiveZoom) && GetCapture()!=g_hWndMain,
+                    "A denied essential live timer must leave a usable idle state");++results.runtimeFailureCases;clean();
+        }
+        // A persistent unavailable input desktop must recover even if its queued
+        // reset notification cannot be posted. Hold the UI pump until the deadline
+        // so no native timer can consume the recovery before the injected failure.
+        clean();press(LIVE_HOTKEY);pump(30);const auto healthy=snapshot();
+        zoomit::runtime::FailAlways(Api::Cursor);SendMessage(g_hWndLiveZoom,WM_USER_SESSION_TICK,0,0);
+        same(healthy,"The initial unavailable-input frame must preserve its last valid LiveZoom view");++results.runtimeFailureCases;
+        Sleep(1550);zoomit::runtime::FailAlways(Api::Post);
+        SendMessage(g_hWndLiveZoom,WM_USER_SESSION_TICK,0,0);
+        const unsigned postAttempts=zoomit::runtime::Calls(Api::Post);zoomit::runtime::Clear();
+        require(postAttempts && mode()==0 && !IsWindow(g_hWndLiveZoom) && !IsWindowVisible(g_hWndMain) && GetCapture()!=g_hWndMain,
+                "A failed queued reset must fall back to synchronous safe cleanup after persistent input loss");
+        ReadOwnedNormalPointer(host,"Persistent input loss with failed reset posting");++results.runtimeFailureCases;clean();
+    }
+
     // Real registrations must derive LiveDraw from Draw, independent of LiveZoom.
     require(GetLiveDrawHotkey((HOTKEYF_CONTROL<<8)|'3')==((HOTKEYF_CONTROL|HOTKEYF_SHIFT)<<8|'3') &&
             GetLiveDrawHotkey(0)==0 && GetLiveDrawHotkey((HOTKEYF_CONTROL|HOTKEYF_SHIFT)<<8|'3')==0,
@@ -1133,14 +1359,25 @@ void PrintModePolicyResults(const ModePolicyResults& result) {
         <<",\"selection_reset_cases\":"<<result.resetCases
         <<",\"allocation_failure_cases\":"<<result.allocationCases<<",\"unavailable_api_cases\":"<<result.unavailableApiCases
         <<",\"duplicate_exit_cases\":"<<result.duplicateExitCases<<",\"late_exit_cases\":"<<result.lateExitCases
-        <<",\"pen_contact_cases\":"<<result.penContactCases<<"}\n";
+        <<",\"pen_contact_cases\":"<<result.penContactCases
+        <<",\"complex_sequences\":"<<result.sequenceCases<<",\"simulated_topology_cases\":"<<result.topologyCases
+        <<",\"stale_native_timer_cases\":"<<result.timerIdentityCases<<",\"staged_graphics_failure_cases\":"<<result.stagedGraphicsCases
+        <<",\"runtime_query_and_timer_failure_cases\":"<<result.runtimeFailureCases<<"}\n";
 }
 
 #include "zoom_granularity.h"
 #include "live_wheel.h"
 #include "zoom_indicator.h"
+#include "capture.h"
+#include "drawing_effects.h"
+#include "selection.h"
+#include "multimonitor.h"
 
 int main(int argc, char** argv) {
+    const bool captureOnly = argc>1 && strcmp(argv[1],"--capture-only")==0;
+    const bool effectsOnly = argc>1 && strcmp(argv[1],"--drawing-effects-only")==0;
+    const bool selectionOnly = argc>1 && strcmp(argv[1],"--selection-only")==0;
+    const bool multiMonitorOnly = argc>1 && strcmp(argv[1],"--multimonitor-only")==0;
     const bool snipOnly = argc>1 && strcmp(argv[1],"--snip-only")==0;
     const bool animationOnly = argc>1 && strcmp(argv[1],"--live-animation-only")==0;
     const bool policyOnly = argc>1 && strcmp(argv[1],"--mode-policy-only")==0;
@@ -1162,10 +1399,25 @@ int main(int argc, char** argv) {
         }
     }
     POINT oldCursor{}; GetCursorPos(&oldCursor);
+    // Keep isolation alive while failure cleanup destroys application windows.
+    std::unique_ptr<ProcessRegistryFixture> isolatedRegistry;
+    bool nativeUiInitialized=false;
     try {
+        isolatedRegistry=std::make_unique<ProcessRegistryFixture>();
+        // Prove callback failures survive native boundaries without becoming app errors.
+        TestCallbackBoundary(nullptr,0,[]{throw std::runtime_error("callback-probe");});
+        bool callbackProbe=false;
+        try {RethrowTestCallbackFailure();} catch(const std::runtime_error& error) {callbackProbe=strcmp(error.what(),"callback-probe")==0;}
+        require(callbackProbe,"Callback assertion evidence must reach the test driver");
         const auto logFolder = std::filesystem::current_path() / ("regression-errors-" + std::to_string(GetCurrentProcessId()));
         std::filesystem::create_directories(logFolder);
         SetEnvironmentVariableW(L"ZOOMIT_TEST_LOG_DIRECTORY", logFolder.c_str());
+        if(captureOnly) {
+            const auto result=RunCaptureRegression();isolatedRegistry->VerifyUntouched();PrintCaptureResults(result);return 0;
+        }
+        if(effectsOnly) {
+            const auto result=RunDrawingEffectsRegression();isolatedRegistry->VerifyUntouched();PrintDrawingEffectsResults(result);return 0;
+        }
         require(g_ToggleKey==((HOTKEYF_CONTROL<<8)|'1') &&
                 g_LiveZoomToggleKey==((HOTKEYF_CONTROL<<8)|'2') &&
                 g_DrawToggleKey==((HOTKEYF_CONTROL<<8)|'3') &&
@@ -1238,9 +1490,7 @@ int main(int argc, char** argv) {
             std::cerr<<"Undo resource mismatch: before="<<gdiBefore<<" after="<<undoGdiAfter<<"\n";
         require(undoGdiAfter<=gdiBefore,"Undo must release every GDI object");
         DeleteDC(dc); DeleteObject(bitmap); DeleteDC(screen);
-        Gdiplus::GdiplusStartupInput gdiplusInput;
-        ULONG_PTR gdiplusToken{};
-        require(Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, nullptr) == Gdiplus::Ok, "GDI+ startup");
+        require(g_GraphicsInit.Ready(),"Regression effects must use the application's single GDI+ initializer");
         size_t effectsBefore{}, effectsAfter{}, effectMemoryBefore{}, effectMemoryAfter{};
         double effectsMilliseconds{};
         {
@@ -1271,7 +1521,6 @@ int main(int argc, char** argv) {
             DrawHighlightedShape(DRAW_RECTANGLE, canvas.dc(), &brush, &pen, 20,20,20,20);
         }
         DeleteDC(screen);
-        Gdiplus::GdiplusShutdown(gdiplusToken);
         g_PenColor=COLOR_RED | 0xff000000; g_PenWidth=5;
         g_TestMode=true; g_ShowTrayIcon=false; g_OptionsShown=true;
         g_ToggleKey=g_DrawToggleKey=g_LiveZoomToggleKey=g_BreakToggleKey=g_SnipToggleKey=0;
@@ -1289,6 +1538,7 @@ int main(int argc, char** argv) {
         pDwmIsCompositionEnabled=reinterpret_cast<type_pDwmIsCompositionEnabled>(GetProcAddress(LoadLibrary(L"dwmapi.dll"), "DwmIsCompositionEnabled"));
         g_OsVersion=WIN10_VERSION;
         require(MagInitialize()!=FALSE,"Magnification API initialization");
+        nativeUiInitialized=true;
         g_hWndMain=InitInstance(GetModuleHandle(nullptr),SW_HIDE);
         require(g_hWndMain!=nullptr,"Main window creation");
         g_SliderZoomLevel=0; g_AnimateZoom=FALSE;g_AnimateLiveZoom=FALSE;
@@ -1303,37 +1553,47 @@ int main(int argc, char** argv) {
         ShowWindow(host,SW_SHOW);
         ActivateTestHost(host);
         SetCursorPos(125,125);
+        if(selectionOnly) {
+            const auto result=RunSelectionRegression(host);
+            DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();SetCursorPos(oldCursor.x,oldCursor.y);
+            isolatedRegistry->VerifyUntouched();PrintSelectionResults(result);return 0;
+        }
+        if(multiMonitorOnly) {
+            const auto result=RunMultiMonitorRegression(host);
+            DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();SetCursorPos(oldCursor.x,oldCursor.y);
+            isolatedRegistry->VerifyUntouched();PrintMultiMonitorResults(result);return 0;
+        }
         if(indicatorOnly) {
             const auto indicator=RunIndicatorRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
-            SetCursorPos(oldCursor.x,oldCursor.y);PrintIndicatorResults(indicator);return 0;
+            SetCursorPos(oldCursor.x,oldCursor.y);isolatedRegistry->VerifyUntouched();PrintIndicatorResults(indicator);return 0;
         }
         if(wheelOnly) {
             const auto wheel=RunLiveWheelRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
             SetCursorPos(oldCursor.x,oldCursor.y);
-            PrintLiveWheelResults(wheel);
+            isolatedRegistry->VerifyUntouched();PrintLiveWheelResults(wheel);
             return 0;
         }
         if(zoomOnly) {
             const auto zoom=RunZoomGranularityRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
             SetCursorPos(oldCursor.x,oldCursor.y);
-            PrintZoomGranularityResults(zoom);
+            isolatedRegistry->VerifyUntouched();PrintZoomGranularityResults(zoom);
             return 0;
         }
         if(policyOnly) {
             const auto policy=RunModePolicyRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
             SetCursorPos(oldCursor.x,oldCursor.y);
-            PrintModePolicyResults(policy);
+            isolatedRegistry->VerifyUntouched();PrintModePolicyResults(policy);
             return 0;
         }
         const LiveAnimationResults liveAnimation=animationOnly ? RunLiveAnimationRegression(host) : LiveAnimationResults{};
         if(animationOnly) {
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
             SetCursorPos(oldCursor.x,oldCursor.y);
-            PrintLiveAnimationResults(liveAnimation);
+            isolatedRegistry->VerifyUntouched();PrintLiveAnimationResults(liveAnimation);
             return 0;
         }
         size_t ignoredZoomToggles=0, ignoredZoomMenuCommands=0, liveZoomIgnoreCases=0;
@@ -1712,7 +1972,7 @@ int main(int argc, char** argv) {
         }
         {
             // Exercise the real Snip selection and capture without replacing the user's clipboard.
-            ComputerGraphicsInit graphics;
+            require(g_GraphicsInit.Ready(),"Snip graphics must use the application initializer");
             wchar_t missing[]=L"Z:\\ZoomIt_missing_file_12345678.png";
             require(!LoadImageFile(missing),"Missing background image must fail cleanly");
             require(SavePng(missing,nullptr)!=ERROR_SUCCESS,"PNG failure must be reported");
@@ -1793,6 +2053,7 @@ int main(int argc, char** argv) {
         DestroyWindow(host);
         MagUninitialize();
         SetCursorPos(oldCursor.x,oldCursor.y);
+        isolatedRegistry->VerifyUntouched();
         std::cout<<"{\"passed\":true,\"live_draw_cycles\":"<<drawCycleCount<<",\"undo_1080p_entries\":"<<count
           <<",\"suspension_cases\":"<<suspensionCases<<",\"suspend_resume_cycles\":"<<suspensionCycles
           <<",\"native_resume_cases\":"<<nativeResumeCases<<",\"suspended_snip_cases\":"<<suspendedSnipCases<<",\"live_zoom_ignore_cases\":"<<liveZoomIgnoreCases<<",\"ignored_zoom_toggles\":"<<ignoredZoomToggles
@@ -1816,13 +2077,12 @@ int main(int argc, char** argv) {
         return 0;
     } catch(const std::exception& ex) {
         std::cerr<<"FAILED: "<<ex.what()<<"\n";
-        if(IsWindow(g_hWndMain)) DestroyWindow(g_hWndMain);
-        if(IsWindow(g_hWndLiveZoom)) DestroyWindow(g_hWndLiveZoom);
-        MagSetFullscreenTransform(1,0,0);
-        MagShowSystemCursor(TRUE);
-        MagUninitialize();
-        ClipCursor(nullptr);
-        SetCursorPos(oldCursor.x,oldCursor.y);
+        if(nativeUiInitialized) {
+            if(IsWindow(g_hWndMain))DestroyWindow(g_hWndMain);
+            if(IsWindow(g_hWndLiveZoom))DestroyWindow(g_hWndLiveZoom);
+            MagSetFullscreenTransform(1,0,0);MagShowSystemCursor(TRUE);MagUninitialize();
+            ClipCursor(nullptr);SetCursorPos(oldCursor.x,oldCursor.y);
+        }
         return 1;
     }
 }

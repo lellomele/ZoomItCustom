@@ -75,7 +75,7 @@ void RunRecoveryScenario(HWND window){
     if(wcscmp(scenario,L"live")==0||wcscmp(scenario,L"layered")==0||wcscmp(scenario,L"frozen")==0){
         SendMessage(window,WM_HOTKEY,3,0);
         SendMessage(g_hWndLiveZoom,WM_USER+104,std::bit_cast<DWORD>(2.5f),0);
-        SendMessage(window,WM_TIMER,3,0);
+        SendMessage(window,WM_USER+129,3,0);
     }
     if(wcscmp(scenario,L"break")==0){
         g_BreakTimeout=2;SendMessage(window,WM_HOTKEY,2,0);
@@ -89,7 +89,7 @@ void RunRecoveryScenario(HWND window){
         }
         HDC canvas=reinterpret_cast<HDC>(SendMessage(window,QueryCanvas,0,0));
         if(canvas)SetPixel(canvas,32,48,RGB(21,91,201));
-        SendMessage(window,WM_LBUTTONUP,0,MAKELPARAM(160,180));
+        SendMessage(window,WM_APP+24,0,0);
     }
     if(wcscmp(scenario,L"exception")==0){
         SendMessage(window,WM_APP+21,0,0);
@@ -102,13 +102,39 @@ void RunRecoveryScenario(HWND window){
         Record(SendMessage(window,QueryMode,0,0)==0?L"resume-ok\n":L"resume-failed\n");
         PostMessage(window,WM_COMMAND,IDCANCEL,0);return;
     }
-    if(wcscmp(scenario,L"corrupt-frame")==0){
+    if(wcscmp(scenario,L"corrupt-frame")==0||wcscmp(scenario,L"corrupt-metadata")==0){
         HDC canvas=reinterpret_cast<HDC>(SendMessage(window,QueryCanvas,0,0));
         if(canvas)SetPixel(canvas,32,48,RGB(201,91,21));
-        SendMessage(window,WM_LBUTTONUP,0,MAKELPARAM(160,180));
+        SendMessage(window,WM_APP+24,0,0);
+        if(wcscmp(scenario,L"corrupt-metadata")==0){
+            const auto before=recovery::client.Statistics();
+            for(unsigned i=0;i<30;++i)SendMessage(window,WM_KEYDOWN,i%2?'G':'B',0);
+            const auto after=recovery::client.Statistics();
+            const bool onlyMetadata=after.canvasCopies==before.canvasCopies&&after.hashedBytes==before.hashedBytes&&
+                after.metadataCommits>=before.metadataCommits+30;
+            Record(onlyMetadata?L"metadata-no-copy-ok\n":L"metadata-no-copy-failed\n");
+        }
         if(!CorruptLatestFrame())Record(L"corruption-failed\n");
     }
     Record(L"crash\n");
+    if(wcscmp(scenario,L"fault-exit")==0){
+        int count{};auto args=CommandLineToArgvW(GetCommandLineW(),&count);const wchar_t* token=nullptr;
+        for(int i=1;args&&i+1<count;++i)if(wcscmp(args[i],L"--supervised")==0){token=args[i+1];break;}
+        if(recovery::ValidToken(token)){
+            wchar_t name[160];recovery::ObjectName(name,160,token,L"control");
+            HANDLE map=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name);
+            auto shared=map?static_cast<recovery::Shared*>(MapViewOfFile(map,FILE_MAP_ALL_ACCESS,0,0,sizeof(recovery::Shared))):nullptr;
+            recovery::ObjectName(name,160,token,L"fault");HANDLE event=OpenEventW(EVENT_MODIFY_STATE,FALSE,name);
+            if(shared&&event){
+                shared->crash.code=EXCEPTION_ACCESS_VIOLATION;shared->crash.thread=GetCurrentThreadId();
+                shared->diagnostic.error=EXCEPTION_ACCESS_VIOLATION;
+                wcscpy_s(shared->diagnostic.operation,L"Crash seguito da terminazione immediata");
+                MemoryBarrier();InterlockedExchange(&shared->crashReported,1);SetEvent(event);
+            }
+            if(shared)UnmapViewOfFile(shared);if(map)CloseHandle(map);if(event)CloseHandle(event);
+        }
+        if(args)LocalFree(args);ExitProcess(EXCEPTION_ACCESS_VIOLATION);
+    }
     if(wcscmp(scenario,L"forced")==0)ExitProcess(0xC0000409);
     CrashNow();
 }

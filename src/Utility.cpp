@@ -8,6 +8,7 @@
 //==============================================================================
 #include "pch.h"
 #include "Utility.h"
+#include "RuntimeSafety.h"
 
 //----------------------------------------------------------------------------
 //
@@ -61,14 +62,25 @@ UINT GetDpiForWindowHelper( HWND window )
 // GetMonitorRectFromCursor
 //
 //----------------------------------------------------------------------------
+bool GetMonitorRectFromCursor(RECT& output) noexcept
+{
+    POINT point{};
+    if (!zoomit::runtime::Permit(zoomit::runtime::Api::Cursor) || !GetCursorPos(&point)) return false;
+    if (!zoomit::runtime::Permit(zoomit::runtime::Api::Monitor)) return false;
+    const HMONITOR monitor=MonitorFromPoint(point,MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(MONITORINFO)};
+    if (!monitor || !GetMonitorInfoW(monitor,&info)) return false;
+    if (info.rcMonitor.right<=info.rcMonitor.left || info.rcMonitor.bottom<=info.rcMonitor.top) {
+        SetLastError(ERROR_INVALID_DATA);return false;
+    }
+    output=info.rcMonitor;
+    return true;
+}
 RECT GetMonitorRectFromCursor()
 {
-    POINT point;
-    GetCursorPos( &point );
-    MONITORINFO monitorInfo{};
-    monitorInfo.cbSize = sizeof( monitorInfo );
-    GetMonitorInfoW( MonitorFromPoint( point, MONITOR_DEFAULTTONEAREST ), &monitorInfo );
-    return monitorInfo.rcMonitor;
+    RECT output{};
+    GetMonitorRectFromCursor(output);
+    return output;
 }
 
 //----------------------------------------------------------------------------

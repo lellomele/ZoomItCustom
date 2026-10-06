@@ -10,6 +10,7 @@
 // See the LICENSE file in the project root for more information.
 //============================================================================
 #pragma once
+#include <cstdint>
 
 // Ignore getversion deprecation warning
 #pragma warning( disable: 4996 )
@@ -207,3 +208,16 @@ public:
 
 
 #define WM_USER_CAN_SHOW_ZOOM_INDICATOR (WM_USER+126)
+
+// Internal ticks are distinct from generation-checked native timer notifications.
+constexpr UINT WM_USER_GET_LIVE_VIEWPORT = WM_USER + 127;
+constexpr UINT WM_USER_RESET_LIVE_SESSION = WM_USER + 128;
+constexpr UINT WM_USER_SESSION_TICK = WM_USER + 129;
+constexpr UINT WM_USER_LIVE_ZOOM_ESCAPE = WM_USER + 130;
+constexpr UINT WM_USER_GET_LIVE_INDICATOR_FACTOR = WM_USER + 131;
+struct LiveViewport { RECT monitor{}, source{}; POINT pointer{}; float factor{1}; std::uint64_t generation{}; };
+
+#ifdef ZOOMIT_TESTING
+constexpr UINT WM_TEST_QUERY_TIMERS = WM_APP + 23;
+constexpr UINT WM_TEST_MARK_CANVAS_DIRTY = WM_APP + 24;
+#endif

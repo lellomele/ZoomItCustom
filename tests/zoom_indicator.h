@@ -1,12 +1,12 @@
 #pragma once
 struct IndicatorResults {
-    size_t zoomCases{},liveCases{},hiddenCases{},preferenceCases{},failureCases{},cycles{};
+    size_t zoomCases{},liveCases{},hiddenCases{},preferenceCases{},failureCases{},persistentCases{},cycles{};
     size_t maximumSurfaceBytes{};
     DWORD gdiBefore{},gdiAfter{},userBefore{},userAfter{};
 };
 bool indicatorSave{},indicatorChoice{};
 size_t indicatorGuiCases{};
-INT_PTR CALLBACK IndicatorOptionsProc(HWND dialog,UINT message,WPARAM wParam,LPARAM lParam) {
+INT_PTR IndicatorOptionsProcImpl(HWND dialog,UINT message,WPARAM wParam,LPARAM lParam) {
     if(message==WM_TIMER && wParam==96) {
         KillTimer(dialog,96);
         HWND page=g_OptionsTabs[ZOOM_PAGE].hPage,check=GetDlgItem(page,IDC_SHOW_ZOOM_INDICATOR);
@@ -23,6 +23,21 @@ INT_PTR CALLBACK IndicatorOptionsProc(HWND dialog,UINT message,WPARAM wParam,LPA
     if(message==WM_INITDIALOG)SetTimer(dialog,96,20,nullptr);
     return result;
 }
+INT_PTR CALLBACK IndicatorOptionsProc(HWND dialog,UINT message,WPARAM word,LPARAM param) noexcept {
+    return TestDialogBoundary(dialog,[&]{return IndicatorOptionsProcImpl(dialog,message,word,param);});
+}
+
+std::function<void()> g_IndicatorOptionsModalCheck;
+void CALLBACK CloseIndicatorFloorOptions(HWND,UINT,UINT_PTR timer,DWORD) noexcept {
+    DWORD owner{};const HWND dialog=hWndOptions;
+    if(!dialog || !GetWindowThreadProcessId(dialog,&owner) || owner!=GetCurrentProcessId())return;
+    KillTimer(nullptr,timer);
+    TestDialogBoundary(dialog,[&] {
+        if(g_IndicatorOptionsModalCheck)g_IndicatorOptionsModalCheck();
+        SendMessage(dialog,WM_COMMAND,IDCANCEL,0);return TRUE;
+    });
+}
+
 IndicatorResults RunIndicatorRegression(HWND host) {
     IndicatorResults result{};
     const BOOLEAN savedEnabled=g_ShowZoomIndicator,savedZoom=g_AnimateZoom,savedLive=g_AnimateLiveZoom;
@@ -31,7 +46,7 @@ IndicatorResults RunIndicatorRegression(HWND host) {
     auto restore=zoomit::OnExit([&] {
         g_ShowZoomIndicator=savedEnabled;g_AnimateZoom=savedZoom;g_AnimateLiveZoom=savedLive;g_fullScreenWorkaround=savedFullscreen;
         g_SliderZoomLevel=savedIndex;g_InitialZoomPercent=savedPercent;g_LegacySliderZoomLevel=savedLegacy;
-        zoomit::ZoomIndicator::denyPresentation=false;g_PolicyModalCheck={};
+        zoomit::ZoomIndicator::denyPresentation=false;g_PolicyModalCheck={};g_IndicatorOptionsModalCheck={};
     });
     auto waitFor=[&](auto ready,const char* message) {
         const auto deadline=GetTickCount64()+3000;while(!ready() && GetTickCount64()<deadline)pump(5);require(ready(),message);
@@ -45,16 +60,20 @@ IndicatorResults RunIndicatorRegression(HWND host) {
     auto liveLevel=[] {return *reinterpret_cast<const float*>(SendMessage(g_hWndLiveZoom,WM_USER_GET_ZOOM_LEVEL,0,0));};
     auto visible=[&](float value) {
         require(g_ZoomIndicator.Visible() && g_ZoomIndicator.Factor()==value,"The overlay must show the requested target, independently of intermediate animation frames");
+        const bool persistent=value==1.0f && IsWindowVisible(g_hWndLiveZoom) && !IsWindowVisible(g_hWndMain);
+        require(g_ZoomIndicator.Persistent()==persistent,"Only the pure LiveZoom floor must use a persistent indicator");
+        require(g_ZoomIndicator.Opacity()==(persistent ? zoomit::ZoomIndicator::FloorOpacity : zoomit::ZoomIndicator::BriefOpacity),"The persistent LiveZoom floor must be more transparent than brief zoom changes");
+        require(g_ZoomIndicator.ExpiryTimerActive()!=persistent && (persistent ? !g_ZoomIndicator.Expires() : g_ZoomIndicator.Expires()!=0),"Persistent floor status must have neither an expiry deadline nor an idle HUD timer");
         HWND window=g_ZoomIndicator.Window();const auto style=GetWindowLongPtr(window,GWL_EXSTYLE);
         require((style&(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW))==
                 (WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW),"Indicator must remain translucent, non-activating and click-through");
         require(GetForegroundWindow()!=window && GetFocus()!=window && GetCapture()!=window,"Indicator must never take focus or mouse capture");
         require(SendMessage(window,WM_NCHITTEST,0,0)==HTTRANSPARENT && SendMessage(window,WM_MOUSEACTIVATE,0,0)==MA_NOACTIVATE,
                 "Native hit testing must reject clicks and activation");
-        MONITORINFO info{};info.cbSize=sizeof(info);POINT at{125,125};GetMonitorInfoW(MonitorFromPoint(at,MONITOR_DEFAULTTONEAREST),&info);
+        MONITORINFO info{};info.cbSize=sizeof(info);POINT at{0,0};GetMonitorInfoW(MonitorFromPoint(at,MONITOR_DEFAULTTOPRIMARY),&info);
         RECT position{};GetWindowRect(window,&position);
         require(position.left>=info.rcMonitor.left && position.top>=info.rcMonitor.top && position.right<info.rcMonitor.right && position.bottom<info.rcMonitor.bottom,
-                "The lower-right overlay must remain inside the active monitor");
+                "The lower-right overlay must remain inside the primary monitor");
         const size_t bytes=g_ZoomIndicator.SurfaceBytes();require(bytes && bytes<=2*1024*1024,"Indicator must use a small bitmap instead of another full-screen canvas");
         result.maximumSurfaceBytes=(std::max)(result.maximumSurfaceBytes,bytes);
         const SIZE size=g_ZoomIndicator.SurfaceSize();const auto pixels=g_ZoomIndicator.Pixels();
@@ -96,6 +115,10 @@ IndicatorResults RunIndicatorRegression(HWND host) {
         waitFor([&]{return !g_ZoomIndicator.Visible();},"Indicator must automatically disappear after its final adjustment");
         require(GetTickCount64()>=expires && !g_ZoomIndicator.SurfaceBytes(),"Expiry must release the bitmap and stop work while hidden");++result.zoomCases;
         SendMessage(g_hWndMain,WM_KEYDOWN,VK_DOWN,0);visible(2.0f);++result.zoomCases;
+        for(int step=0;step<4;++step)SendMessage(g_hWndMain,WM_KEYDOWN,VK_DOWN,0);
+        visible(1.0f);require(!g_ZoomIndicator.Persistent(),"Static Zoom at 1x must retain the existing brief indicator");
+        waitFor([&]{return !g_ZoomIndicator.Visible();},"Static Zoom at 1x must still expire normally");++result.zoomCases;
+        SendMessage(g_hWndMain,WM_KEYDOWN,VK_UP,0);visible(1.25f);
         // Copy and save hide before screen capture; selection callback sees the hidden state.
         g_PolicyModalCheck=[&] {require(!g_ZoomIndicator.Visible() && !g_ZoomIndicator.SurfaceBytes(),"Snip must hide the indicator before selecting or capturing pixels");++result.hiddenCases;};
         cancelSnip=true;SetTimer(nullptr,0,15,SelectPolicyRegion);SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,MAKELPARAM(MOD_CONTROL,'5'));
@@ -115,7 +138,25 @@ IndicatorResults RunIndicatorRegression(HWND host) {
         for(int i=0;i<4;++i)SendMessage(live,WM_HOTKEY,1,0);visible(1.0f);
         waitFor([&]{return liveLevel()==1.0f;},"Indicator must coexist with active LiveZoom at its 1x minimum");
         const auto floorExpires=g_ZoomIndicator.Expires();SendMessage(live,WM_HOTKEY,1,0);
-        require(g_ZoomIndicator.Expires()==floorExpires && IsWindowVisible(live),"A reduction clamped at 1x must not renew the indicator or exit LiveZoom");++result.liveCases;
+        require(!floorExpires && g_ZoomIndicator.Expires()==floorExpires && IsWindowVisible(live),"A reduction clamped at 1x must preserve persistent status without exiting LiveZoom");++result.liveCases;
+        const HWND floorLabel=g_ZoomIndicator.Window();
+        SendMessage(floorLabel,WM_TIMER,1,0);visible(1.0f);
+        MSG oldTimer{};while(PeekMessage(&oldTimer,floorLabel,WM_TIMER,WM_TIMER,PM_REMOVE))DispatchMessage(&oldTimer);
+        const auto timerNotifications=g_ZoomIndicator.TimerNotifications();const auto floorBytes=g_ZoomIndicator.SurfaceBytes();
+        pump(zoomit::ZoomIndicator::Duration+150);visible(1.0f);
+        require(g_ZoomIndicator.TimerNotifications()==timerNotifications && g_ZoomIndicator.SurfaceBytes()==floorBytes,
+                "Persistent floor status must outlive the normal duration with no native HUD timer messages or extra surfaces");++result.persistentCases;
+        HWND floorExclusions[4]{};const int floorCount=MagGetWindowFilterList(g_hWndLiveZoomMag,MW_FILTERMODE_EXCLUDE,4,floorExclusions);
+        require(floorCount==2 && std::find(floorExclusions,floorExclusions+floorCount,floorLabel)!=floorExclusions+floorCount,
+                "The persistent floor status must remain excluded from the actual magnifier capture");++result.persistentCases;
+        g_IndicatorOptionsModalCheck=[&] {
+            require(!g_ZoomIndicator.Visible() && !g_ZoomIndicator.SurfaceBytes() && !g_ZoomIndicator.ExpiryTimerActive(),
+                    "Options must remove persistent status while the modal panel is open");++result.hiddenCases;
+        };
+        const UINT_PTR optionsTimer=SetTimer(nullptr,0,15,CloseIndicatorFloorOptions);
+        require(optionsTimer!=0,"Schedule the process-owned floor Options closure");
+        SendMessage(g_hWndMain,WM_COMMAND,IDC_OPTIONS,0);KillTimer(nullptr,optionsTimer);g_IndicatorOptionsModalCheck={};
+        RethrowTestCallbackFailure();visible(1.0f);++result.persistentCases;
         for(bool liveDraw:{false,true}) {
             SendMessage(g_hWndMain,WM_HOTKEY,liveDraw ? LIVE_DRAW_HOTKEY : DRAW_HOTKEY,MAKELPARAM(MOD_CONTROL | (liveDraw ? MOD_SHIFT : 0),'3'));
             SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(150,150));pump(40);
@@ -123,16 +164,27 @@ IndicatorResults RunIndicatorRegression(HWND host) {
             SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,0);SendMessage(g_hWndMain,WM_RBUTTONUP,0,0);
             require(!g_ZoomIndicator.Visible(),"Paused drawing must not show the zoom factor");
             SendMessage(g_hWndMain,WM_KEYDOWN,VK_ESCAPE,0);pump(80);
-            require(IsWindowVisible(g_hWndLiveZoom) && !g_ZoomIndicator.Visible(),"Returning from drawing must not replay the entry indicator");++result.hiddenCases;
+            require(IsWindowVisible(g_hWndLiveZoom),"Returning from drawing must retain the active LiveZoom floor");
+            visible(1.0f);++result.hiddenCases;++result.persistentCases;
         }
+        g_PolicyModalCheck=[&] {require(!g_ZoomIndicator.Visible() && !g_ZoomIndicator.SurfaceBytes(),"Floor Snip must hide persistent status before selection and capture");++result.hiddenCases;};
+        cancelSnip=true;SetTimer(nullptr,0,15,SelectPolicyRegion);SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,MAKELPARAM(MOD_CONTROL,'5'));
+        g_PolicyModalCheck={};cancelSnip=false;pump(50);visible(1.0f);++result.persistentCases;
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);visible(1.25f);
+        const auto higherExpires=g_ZoomIndicator.Expires();
+        waitFor([&]{return !g_ZoomIndicator.Visible();},"Returning above 1x must restore the normal brief duration");
+        require(GetTickCount64()>=higherExpires && !g_ZoomIndicator.Persistent() && !g_ZoomIndicator.ExpiryTimerActive(),"A higher zoom factor must release the persistent floor surface when its brief label expires");++result.persistentCases;
+        SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);visible(1.5f);
         g_PolicyModalCheck=[&] {require(!g_ZoomIndicator.Visible(),"LiveZoom Snip must hide the indicator before freezing the screen");++result.hiddenCases;};
         cancelSnip=true;SetTimer(nullptr,0,15,SelectPolicyRegion);SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,MAKELPARAM(MOD_CONTROL,'5'));
         g_PolicyModalCheck={};cancelSnip=false;pump(50);require(!g_ZoomIndicator.Visible() && IsWindowVisible(g_hWndLiveZoom),"LiveZoom must resume after Snip without reintroducing the indicator");++result.hiddenCases;clean();
     }
     g_ShowZoomIndicator=FALSE;open(false,false);require(!g_ZoomIndicator.Visible(),"Disabled preference must suppress static zoom entry");
     SendMessage(g_hWndMain,WM_KEYDOWN,VK_UP,0);require(!g_ZoomIndicator.Visible(),"Disabled preference must suppress static adjustments");
-    open(true,false);SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);require(!g_ZoomIndicator.Visible(),"Disabled preference must suppress live entry and adjustments");clean();result.preferenceCases+=3;
+    open(true,false);SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);require(!g_ZoomIndicator.Visible(),"Disabled preference must suppress live entry and adjustments");
+    for(int step=0;step<5;++step)SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);
+    SendMessage(g_hWndMain,WM_USER_SESSION_TICK,3,0);
+    require(liveLevel()==1.0f && !g_ZoomIndicator.Visible() && !g_ZoomIndicator.Persistent(),"Disabled preference must also suppress persistent status at the active 1x floor");clean();result.preferenceCases+=4;
     g_ShowZoomIndicator=TRUE;zoomit::ZoomIndicator::denyPresentation=true;open(true,false);
     require(g_ZoomIndicator.Failed() && IsWindowVisible(g_hWndLiveZoom) && liveLevel()==2,"An indicator allocation failure must leave LiveZoom operational");
     SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);require(liveLevel()==2.25f && !g_ZoomIndicator.Visible(),"Zoom controls must continue after indicator failure");++result.failureCases;
@@ -142,7 +194,7 @@ IndicatorResults RunIndicatorRegression(HWND host) {
     if(GetEnvironmentVariableW(L"ZOOMIT_TEST_INDICATOR_CAPTURE",capture,_countof(capture))) {
         const SIZE size=g_ZoomIndicator.SurfaceSize();HDC dc=CreateCompatibleDC(nullptr),screen=GetDC(host);HBITMAP bitmap=CreateCompatibleBitmap(screen,size.cx,size.cy);ReleaseDC(host,screen);SelectObject(dc,bitmap);
         RECT canvas{0,0,size.cx,size.cy};HBRUSH background=CreateSolidBrush(RGB(60,95,150));FillRect(dc,&canvas,background);DeleteObject(background);
-        BLENDFUNCTION blend{AC_SRC_OVER,0,205,AC_SRC_ALPHA};AlphaBlend(dc,0,0,size.cx,size.cy,g_ZoomIndicator.SurfaceDC(),0,0,size.cx,size.cy,blend);
+        BLENDFUNCTION blend{AC_SRC_OVER,0,g_ZoomIndicator.Opacity(),AC_SRC_ALPHA};AlphaBlend(dc,0,0,size.cx,size.cy,g_ZoomIndicator.SurfaceDC(),0,0,size.cx,size.cy,blend);
         require(SavePng(capture,bitmap)==ERROR_SUCCESS,"Save the actual overlay surface for visual verification");DeleteDC(dc);DeleteObject(bitmap);
     }
     // Negative monitor origins and larger DPI values must preserve corner placement.
@@ -153,7 +205,7 @@ IndicatorResults RunIndicatorRegression(HWND host) {
                 "Indicator geometry must remain in bounds with negative monitor coordinates and different DPI");++result.liveCases;
     }
     clean();result.gdiBefore=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);result.userBefore=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);
-    for(int i=0;i<20;++i) {open(i%2,false);if(i%2)SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);else SendMessage(g_hWndMain,WM_KEYDOWN,VK_UP,0);clean();++result.cycles;}
+    for(int i=0;i<20;++i) {open(i%2,false);if(i%2){for(int step=0;step<4;++step)SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);visible(1.0f);}else SendMessage(g_hWndMain,WM_KEYDOWN,VK_UP,0);clean();++result.cycles;}
     result.gdiAfter=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);result.userAfter=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);
     require(result.gdiAfter<=result.gdiBefore && result.userAfter<=result.userBefore,"Repeated indicators must not leak bitmaps, DCs, windows or timers");
     return result;
@@ -161,6 +213,6 @@ IndicatorResults RunIndicatorRegression(HWND host) {
 void PrintIndicatorResults(const IndicatorResults& r) {
     std::cout<<"{\"passed\":true,\"zoom_indicator\":true,\"static_cases\":"<<r.zoomCases<<",\"live_cases\":"<<r.liveCases
         <<",\"hidden_during_capture_or_drawing\":"<<r.hiddenCases<<",\"preference_cases\":"<<r.preferenceCases<<",\"failure_cases\":"<<r.failureCases
-        <<",\"show_hide_cycles\":"<<r.cycles<<",\"maximum_surface_bytes\":"<<r.maximumSurfaceBytes<<",\"gdi_before\":"<<r.gdiBefore<<",\"gdi_after\":"<<r.gdiAfter
+        <<",\"persistent_floor_cases\":"<<r.persistentCases<<",\"show_hide_cycles\":"<<r.cycles<<",\"maximum_surface_bytes\":"<<r.maximumSurfaceBytes<<",\"gdi_before\":"<<r.gdiBefore<<",\"gdi_after\":"<<r.gdiAfter
         <<",\"user_before\":"<<r.userBefore<<",\"user_after\":"<<r.userAfter<<"}\n";
 }

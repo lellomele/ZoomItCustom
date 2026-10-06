@@ -22,6 +22,11 @@ int ReportProcess(const wchar_t* token,DWORD pid) {
     HANDLE map=OpenFileMappingW(FILE_MAP_READ,FALSE,name);if(!map)return 1;
     auto shared=static_cast<const recovery::Shared*>(MapViewOfFile(map,FILE_MAP_READ,0,0,sizeof(recovery::Shared)));
     bool ok=false;
+#ifdef ZOOMIT_RECOVERY_TESTING
+    wchar_t reporterMode[32]{};GetEnvironmentVariableW(L"ZOOMIT_TEST_REPORTER_MODE",reporterMode,_countof(reporterMode));
+    if(wcscmp(reporterMode,L"hung")==0)Sleep(INFINITE);
+    if(wcscmp(reporterMode,L"fail")==0){if(shared)UnmapViewOfFile(shared);CloseHandle(map);return 1;}
+#endif
     if(shared&&shared->magic==recovery::ProtocolMagic&&shared->version==recovery::ProtocolVersion&&shared->diagnostic.process==pid){
         HANDLE process=OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ,FALSE,pid);
         ok=recovery::WriteReport(shared->diagnostic,&shared->crash,process,shared->outcome);
@@ -83,28 +88,41 @@ int RunSupervisor(const wchar_t* executableOverride=nullptr) {
             MessageBoxW(nullptr,L"Impossibile avviare ZoomItCustom.exe. Il rapporto e nella cartella dei log.",L"ZoomIt Custom",MB_OK|MB_ICONERROR);return 1;
         }
         CloseHandle(child.hThread);
+#ifdef ZOOMIT_RECOVERY_TESTING
+        wchar_t testScenario[64]{};GetEnvironmentVariableW(L"ZOOMIT_TEST_SCENARIO",testScenario,_countof(testScenario));
+        // Force both objects signalled before the wait, exposing the lowest-index selection race.
+        if(wcscmp(testScenario,L"fault-exit")==0)WaitForSingleObject(child.hProcess,5000);
+#endif
         HANDLE waitHandles[]{child.hProcess,objects.fault};
         DWORD event=WaitForMultipleObjects(2,waitHandles,FALSE,INFINITE);
-        bool reported=false;
+        bool reportSaved=false;
         const ULONGLONG detected=GetTickCount64();
         if(lastCrash&&detected-lastCrash>=60000)retries=0;
         StringCchCopyW(objects.shared->outcome,160,retries==0?
             L"Supervisione: riavvio e ripristino dell'ultimo stato valido.":
             retries==1?L"Supervisione: secondo crash ravvicinato, riavvio sul desktop.":
             L"Supervisione: tre crash ravvicinati, riavvii automatici fermati.");
-        if(event==WAIT_OBJECT_0+1){
+        if(event==WAIT_OBJECT_0+1||
+           (event==WAIT_OBJECT_0&&objects.shared->crashReported)){
+            // A crash notification and process termination can become signalled together.
+            // Process termination wins the wait by index; it does not prove a report was saved.
             // Dump in a short-lived helper: a stuck dump must never block the supervisor.
             wchar_t dumpCommand[2*MAX_PATH+160];
             StringCchPrintfW(dumpCommand,_countof(dumpCommand),L"\"%s\" --report %s %lu",supervisor,token,child.dwProcessId);
             PROCESS_INFORMATION reporter{};
-            if(Launch(supervisor,dumpCommand,reporter)){
+            bool allowReporter=true;
+#ifdef ZOOMIT_RECOVERY_TESTING
+            wchar_t reporterMode[32]{};GetEnvironmentVariableW(L"ZOOMIT_TEST_REPORTER_MODE",reporterMode,_countof(reporterMode));
+            allowReporter=wcscmp(reporterMode,L"launch-fail")!=0;
+#endif
+            if(allowReporter&&Launch(supervisor,dumpCommand,reporter)){
                 CloseHandle(reporter.hThread);
                 if(WaitForSingleObject(reporter.hProcess,3000)==WAIT_TIMEOUT){
                     TerminateProcess(reporter.hProcess,ERROR_TIMEOUT);WaitForSingleObject(reporter.hProcess,1000);
                 }
-                DWORD result=1;GetExitCodeProcess(reporter.hProcess,&result);reported=result==0;CloseHandle(reporter.hProcess);
+                DWORD result=1;GetExitCodeProcess(reporter.hProcess,&result);reportSaved=result==0;CloseHandle(reporter.hProcess);
             }
-            if(!reported)recovery::WriteReport(objects.shared->diagnostic,&objects.shared->crash,nullptr,
+            if(!reportSaved)reportSaved=recovery::WriteReport(objects.shared->diagnostic,&objects.shared->crash,nullptr,
                 L"Raccolta minidump non completata nei tempi previsti; recupero automatico prosegue.");
             SetEvent(objects.ack);
             if(WaitForSingleObject(child.hProcess,3000)==WAIT_TIMEOUT){
@@ -115,10 +133,11 @@ int RunSupervisor(const wchar_t* executableOverride=nullptr) {
         }
         DWORD exitCode=1;GetExitCodeProcess(child.hProcess,&exitCode);CloseHandle(child.hProcess);
         if(objects.shared->normalExit)return 0;
-        if(!objects.shared->crashReported){
+        if(!reportSaved){
             auto diagnostic=objects.shared->diagnostic;diagnostic.process=child.dwProcessId;diagnostic.error=exitCode;
             StringCchCopyW(diagnostic.operation,128,L"Terminazione anomala del processo");
-            recovery::Crash crash{};crash.code=exitCode;
+            recovery::Crash crash=objects.shared->crash;
+            if(!objects.shared->crashReported)crash.code=exitCode;
             recovery::WriteReport(diagnostic,&crash,nullptr,objects.shared->outcome);
         }
         recovery::RestoreSystem(objects.shared->system);

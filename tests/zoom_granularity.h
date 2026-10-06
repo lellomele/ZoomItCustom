@@ -10,7 +10,7 @@ DWORD zoomOptionsIndex=3;
 size_t zoomOptionsCases=0;
 const wchar_t* zoomOptionsCapture=nullptr;
 
-INT_PTR CALLBACK ZoomGranularityOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+INT_PTR ZoomGranularityOptionsProcImpl(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
     if(message==WM_TIMER && wParam==96) {
         KillTimer(dialog,96);
         HWND page=g_OptionsTabs[ZOOM_PAGE].hPage;
@@ -65,6 +65,10 @@ INT_PTR CALLBACK ZoomGranularityOptionsProc(HWND dialog, UINT message, WPARAM wP
     return result;
 }
 
+INT_PTR CALLBACK ZoomGranularityOptionsProc(HWND dialog,UINT message,WPARAM word,LPARAM param) noexcept {
+    return TestDialogBoundary(dialog,[&]{return ZoomGranularityOptionsProcImpl(dialog,message,word,param);});
+}
+
 ZoomGranularityResults RunZoomGranularityRegression(HWND host) {
     ZoomGranularityResults results{};
     const DWORD savedIndex=g_SliderZoomLevel,savedPercent=g_InitialZoomPercent,savedLegacy=g_LegacySliderZoomLevel;
@@ -77,16 +81,7 @@ ZoomGranularityResults RunZoomGranularityRegression(HWND host) {
         g_ToggleKey=keys[0];g_LiveZoomToggleKey=keys[1];g_DrawToggleKey=keys[2];g_BreakToggleKey=keys[3];g_SnipToggleKey=keys[4];
         zoomOptionsSave=false;g_TestMode=true;
     });
-    const std::wstring fixturePath=L"Software\\ZoomItCustom\\ZoomGranularity_"+std::to_wstring(GetCurrentProcessId());
-    HKEY fixture{};
-    require(RegCreateKeyExW(HKEY_CURRENT_USER,fixturePath.c_str(),0,nullptr,0,KEY_ALL_ACCESS,nullptr,&fixture,nullptr)==ERROR_SUCCESS,
-            "Create isolated settings fixture");
-    struct FixtureCleanup {
-        std::wstring path;HKEY handle{};bool active{};
-        ~FixtureCleanup(){if(active)RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);if(handle)RegCloseKey(handle);RegDeleteTreeW(HKEY_CURRENT_USER,path.c_str());}
-    } cleanup{fixturePath,fixture};
-    require(RegOverridePredefKey(HKEY_CURRENT_USER,fixture)==ERROR_SUCCESS,"Isolate all HKCU changes within the native test process");
-    cleanup.active=true;
+    // The regression process redirects all HKCU operations before InitInstance.
     ClassRegistry settings(L"ZoomLevels");
     REG_SETTING table[3]{};
     for(auto& setting:RegSettings) {

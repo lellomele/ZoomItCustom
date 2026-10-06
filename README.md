@@ -35,7 +35,7 @@ If you move the folder, confirm the choice again to update the startup location.
 
 ## Everyday use
 
-Shortcuts can be changed in the options.
+Shortcuts can be changed in the options. LiveDraw always uses the configured Draw shortcut with Shift added; its current combination is shown in the Draw tab. Choose a Draw shortcut without Shift so the two actions remain distinct.
 
 | Default shortcut | Action |
 | --- | --- |
@@ -44,16 +44,26 @@ Shortcuts can be changed in the options.
 | Ctrl+3 | Draw |
 | Ctrl+4 | Break timer |
 | Ctrl+5 | Copy a snip |
-| Ctrl+Shift+2 | LiveDraw |
+| Ctrl+Shift+3 | LiveDraw (Draw shortcut + Shift) |
 | Ctrl+Shift+5 | Save a PNG snip |
 
 Static Zoom freezes the enlarged image. LiveZoom updates it in real time; LiveDraw lets you draw over that live view.
 
-In LiveZoom, **Ctrl+Up / Ctrl+Down** adjust magnification. **Ctrl+1 is ignored** while LiveZoom is active. **Ctrl+3** switches to drawing on a frozen image; **Esc** returns to LiveZoom. **Ctrl+2** closes LiveZoom and any active LiveDraw.
+Each mode has its own **Animate zoom in and zoom out** checkbox. In LiveZoom, checking it makes entry, exit and zoom-level changes gradual; leaving it unchecked applies them instantly. The LiveZoom option starts unchecked and is saved independently of the Zoom option.
 
-In Draw, **Ctrl+Z** undoes and **E** clears annotations. The first **right-click** pauses drawing and shows a small ring in the active colour with a dark centre. Moving the mouse adds no strokes. **Left-click** resumes drawing; a second **right-click** exits Draw. **Esc** also ends the mode. In the timer, arrow keys adjust the duration and **Esc** ends the break.
+In LiveZoom, **Ctrl+Up / Ctrl+Down** adjust magnification. **Ctrl+3** starts Draw on a frozen image; **Ctrl+Shift+3** starts LiveDraw without freezing the view. **Esc** ends drawing and returns to LiveZoom. **Ctrl+2** exits LiveZoom only when drawing is inactive.
 
-Snip also works in static Zoom, including annotations. With LiveZoom it temporarily freezes the image, then restores the live view. Snip is unavailable while LiveDraw is active. When saving, choose **Zoomed PNG** for the displayed size or **Actual size PNG** to remove the magnification.
+Mode shortcuts follow these rules, also during zoom animations:
+
+- From the desktop, any mode can start. In static Zoom, Draw, LiveDraw, LiveZoom and timer shortcuts are ignored; the Zoom shortcut exits Zoom.
+- In LiveZoom without drawing, Draw, LiveDraw and Snip are available; Zoom and the timer are ignored.
+- While Draw or LiveDraw is active or paused, Zoom, LiveZoom, timer and drawing-mode shortcuts make no changes. Use the mouse controls or Esc to end drawing.
+- In the timer, only its own mode shortcut is accepted; pressing it again restarts the countdown.
+- During Snip selection, saving or options, mode shortcuts are ignored. Ignored shortcuts are never queued for later.
+
+In Draw and LiveDraw, **Ctrl+Z** undoes and **E** clears annotations. The first **right-click** pauses drawing and shows a small ring in the active colour with a dark centre. Moving the mouse adds no strokes. **Left-click** resumes drawing; a second **right-click** exits. **Esc** also ends drawing. LiveDraw does not support highlighting or blur. In the timer, Up/Down and the mouse wheel adjust minutes; Left/Right adjust ten seconds and **Esc** ends the break.
+
+Snip works on the desktop, in static Zoom, in LiveZoom and in Draw, including paused drawing. It preserves annotations, magnification and the drawing state after capture or cancellation. With LiveZoom it temporarily freezes the image, then restores the live view. Snip is ignored during an unfinished stroke, the timer, or LiveDraw over LiveZoom; it remains available for LiveDraw on the desktop. **Ctrl+Shift+5** saves a PNG under the same rules. When saving, choose **Zoomed PNG** for the displayed size or **Actual size PNG** to remove the magnification.
 
 ## If something goes wrong
 

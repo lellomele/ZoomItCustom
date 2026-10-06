@@ -111,25 +111,25 @@ END
 // Dialog
 //
 
-OPTIONS DIALOGEX 0, 0, 279, 411
+OPTIONS DIALOGEX 0, 0, 279, 429
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CLIPSIBLINGS | WS_CAPTION | WS_SYSMENU
 EXSTYLE WS_EX_CONTROLPARENT
 CAPTION "ZoomIt Custom"
 FONT 8, "MS Shell Dlg", 0, 0, 0x0
 BEGIN
-    DEFPUSHBUTTON   "OK",IDOK,166,391,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,223,391,50,14
+    DEFPUSHBUTTON   "OK",IDOK,166,409,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,223,409,50,14
     LTEXT           "ZoomIt Custom",IDC_VERSION,42,8,223,10
     LTEXT           "Screen magnification and annotation",IDC_STATIC,42,23,223,10
     ICON            "APPICON",IDC_STATIC,12,9,20,20
-    CONTROL         "Show tray icon",IDC_SHOW_TRAY_ICON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,295,105,10
-    CONTROL         "",IDC_TAB,"SysTabControl32",TCS_MULTILINE | WS_TABSTOP,8,46,265,245
-    LTEXT           "",IDC_SUPERVISION_STATUS,126,295,147,10
-    GROUPBOX        "Avvio automatico (all'accesso a Windows)",IDC_STATIC,8,309,265,58
-    CONTROL         "Disattivato",IDC_STARTUP_OFF,"Button",BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,16,322,248,10
-    CONTROL         "Avvia ZoomIt Custom con Windows",IDC_STARTUP_NORMAL,"Button",BS_AUTORADIOBUTTON,16,335,248,10
-    CONTROL         "Avvia ZoomIt Custom con supervisore",IDC_STARTUP_SUPERVISED,"Button",BS_AUTORADIOBUTTON,16,348,248,10
-    LTEXT           "",IDC_STARTUP_HINT,13,371,260,18
+    CONTROL         "Show tray icon",IDC_SHOW_TRAY_ICON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,313,105,10
+    CONTROL         "",IDC_TAB,"SysTabControl32",TCS_MULTILINE | WS_TABSTOP,8,46,265,263
+    LTEXT           "",IDC_SUPERVISION_STATUS,126,313,147,10
+    GROUPBOX        "Avvio automatico (all'accesso a Windows)",IDC_STATIC,8,327,265,58
+    CONTROL         "Disattivato",IDC_STARTUP_OFF,"Button",BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,16,340,248,10
+    CONTROL         "Avvia ZoomIt Custom con Windows",IDC_STARTUP_NORMAL,"Button",BS_AUTORADIOBUTTON,16,353,248,10
+    CONTROL         "Avvia ZoomIt Custom con supervisore",IDC_STARTUP_SUPERVISED,"Button",BS_AUTORADIOBUTTON,16,366,248,10
+    LTEXT           "",IDC_STARTUP_HINT,13,389,260,18
 END
 
 ADVANCED_BREAK DIALOGEX 0, 0, 209, 219
@@ -182,26 +182,28 @@ BEGIN
     LTEXT           "3.0",IDC_STATIC,164,122,12,8
     LTEXT           "4.0",IDC_STATIC,190,122,12,8
     CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,74,116,10
-    LTEXT           "Copy a zoomed screen with Ctrl+C or save it by typing Ctrl+S. Crop the copy or save region by entering Ctrl+Shift instead of Ctrl.",IDC_STATIC,7,34,246,17
+    LTEXT           "Ctrl+C / Ctrl+S: copy / save. Ctrl+Shift+C / Ctrl+Shift+S: copy / save a region. Draw and LiveDraw hotkeys are ignored in Zoom.",IDC_STATIC,7,34,246,17
 END
 
-DRAW DIALOGEX 0, 0, 260, 228
+DRAW DIALOGEX 0, 0, 260, 246
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "Once zoomed, toggle drawing mode by pressing the left mouse button. Undo with Ctrl+Z and all drawing by pressing E. Center the cursor with the space bar. Exit drawing mode by pressing the right mouse button.",IDC_STATIC,7,7,246,24
-    LTEXT           "Pen Control ",IDC_PEN_CONTROL,7,38,40,8
-    LTEXT           "Change the pen width by pressing left Ctrl and using the mouse wheel or the up and down arrow keys.",IDC_STATIC,19,48,233,16
-    LTEXT           "Colors",IDC_COLORS,7,70,21,8
-    LTEXT           "Change the pen color by pressing R (red), G (green), B (blue),\nO (orange), Y (yellow) or P (pink).",IDC_STATIC,19,80,233,16
-    LTEXT           "Highlight and Blur",IDC_HIGHLIGHT_AND_BLUR,7,102,58,8
-    LTEXT           "Hold Shift while pressing a color key for a translucent highlighter color. Press X for blur or Shift+X for a stronger blur.",IDC_STATIC,19,113,233,16
-    LTEXT           "Shapes",IDC_SHAPES,7,134,23,8
-    LTEXT           "Draw a line by holding down the Shift key, a rectangle with the Ctrl key, an ellipse with the Tab key and an arrow with Shift+Ctrl.",IDC_STATIC,19,144,233,16
-    LTEXT           "Screen",IDC_SCREEN,7,166,22,8
-    LTEXT           "Clear the screen for a sketch pad by pressing W (white) or K (black). Copy a zoomed screen with Ctrl+C or save it by typing Ctrl+S. Crop the copy or save region by entering Ctrl+Shift instead of Ctrl.",IDC_STATIC,19,176,233,24
-    CONTROL         "",IDC_DRAW_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,73,207,80,12
-    LTEXT           "Draw w/out Zoom:",IDC_STATIC,7,210,63,11
+    LTEXT           "Draw freezes the desktop or LiveZoom. Right-click pauses (ring pointer); left-click resumes. Right-click again or press Escape to exit. Other mode hotkeys are ignored while drawing, even when paused.",IDC_STATIC,7,7,246,32
+    LTEXT           "Pen Control ",IDC_PEN_CONTROL,7,44,40,8
+    LTEXT           "Change the pen width with left Ctrl + mouse wheel or Up/Down. Center the pointer with the space bar.",IDC_STATIC,19,54,233,16
+    LTEXT           "Colors",IDC_COLORS,7,75,21,8
+    LTEXT           "Change the pen color with R (red), G (green), B (blue), O (orange), Y (yellow) or P (pink).",IDC_STATIC,19,85,233,16
+    LTEXT           "Highlight and Blur",IDC_HIGHLIGHT_AND_BLUR,7,106,58,8
+    LTEXT           "Shift + color: highlighter. X / Shift+X: blur / stronger blur. Highlight and blur are unavailable in LiveDraw.",IDC_STATIC,19,116,233,16
+    LTEXT           "Shapes",IDC_SHAPES,7,137,23,8
+    LTEXT           "Hold Shift for a line, Ctrl for a rectangle, Tab for an ellipse, or Shift+Ctrl for an arrow.",IDC_STATIC,19,147,233,16
+    LTEXT           "Screen",IDC_SCREEN,7,168,22,8
+    LTEXT           "Ctrl+Z: undo. E: erase. W / K: white / black background. Ctrl+C / Ctrl+S: copy / save. Ctrl+Shift+C / Ctrl+Shift+S: copy / save a region.",IDC_STATIC,19,178,233,24
+    CONTROL         "",IDC_DRAW_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,96,213,80,12
+    LTEXT           "Draw:",IDC_STATIC,7,215,84,10
+    LTEXT           "LiveDraw:",IDC_STATIC,7,230,84,10
+    LTEXT           "",IDC_LIVE_DRAW_HOTKEY,96,230,157,10
 END
 
 
@@ -215,37 +217,41 @@ BEGIN
     CONTROL         "",IDC_SPIN_TIMER,"msctls_updown32",UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS,45,86,11,12
     LTEXT           "minutes",IDC_STATIC,67,88,25,8
     PUSHBUTTON      "&Advanced",IDC_ADVANCED_BREAK,212,102,41,14
-    LTEXT           "Enter timer mode by using the ZoomIt tray icon's Break menu item. Increase and decrease time with the arrow keys. If you Alt-Tab away from the timer window, reactivate it by left-clicking on the ZoomIt tray icon. Exit timer mode with Escape. ",IDC_STATIC,7,7,246,33
+    LTEXT           "Use the hotkey below to start or restart the timer. Up/Down or the wheel change minutes; Left/Right change 10 seconds. Escape exits. Other mode hotkeys are ignored.",IDC_STATIC,7,7,246,33
     LTEXT           "Start Timer:",IDC_STATIC,7,70,39,8
     LTEXT           "Timer:",IDC_STATIC,7,88,20,8
-    LTEXT           "Change the break timer color using the same keys that the drawing color. The timer uses the default system font.",IDC_STATIC,7,45,219,20
+    LTEXT           "Use the drawing color keys for the timer. After Alt+Tab, click the tray icon to reactivate it.",IDC_STATIC,7,45,246,20
     CONTROL         "Show Time Elapsed After Expiration:",IDC_CHECK_SHOW_EXPIRED,
                     "Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,8,104,132,10
 END
 
 
 
-LIVEZOOM DIALOGEX 0, 0, 260, 134
+LIVEZOOM DIALOGEX 0, 0, 260, 176
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "",IDC_LIVE_STATUS,7,123,246,10
-    CONTROL         "",IDC_LIVE_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,69,108,80,12
     LTEXT           "LiveZoom mode is supported on updated Windows 10 and Windows 11 where window updates show while zoomed. ",IDC_STATIC,7,7,246,18
-    LTEXT           "LiveZoom Toggle:",IDC_STATIC,7,110,62,8
-    LTEXT           "To enter and exit LiveZoom, enter the hotkey specified below.",IDC_STATIC,7,94,218,13
-    LTEXT           "Note that in LiveZoom you must use Ctrl+Up and Ctrl+Down to control the zoom level. To enter drawing mode, use the standard zoom-without-draw hotkey and then escape to go back to LiveZoom.",IDC_STATIC,7,30,246,27
-    LTEXT           "Use LiveDraw to draw and annotate the live desktop. To activate LiveDraw, enter the hotkey with the Shift key in the opposite mode. You can remove LiveDraw annotations by activating LiveDraw and enter the escape key",IDC_STATIC,7,62,246,32
+    LTEXT           "Ctrl+Up / Ctrl+Down change magnification. Draw (Ctrl+3 by default) freezes the view; Escape returns to LiveZoom. The Zoom hotkey is ignored, including while drawing.",IDC_STATIC,7,30,246,27
+    LTEXT           "LiveDraw keeps the view live: use Draw + Shift (Ctrl+Shift+3 by default; see Draw tab). Escape ends drawing. Zoom, LiveZoom and timer hotkeys are ignored during Draw or LiveDraw, even when paused.",IDC_STATIC,7,62,246,32
+    CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_LIVE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,99,116,10
+    LTEXT           "Smoothly magnify on entry and return to normal size on exit. Unchecked: change instantly.",IDC_STATIC,7,113,246,18
+    LTEXT           "The hotkey below toggles LiveZoom when drawing is inactive.",IDC_STATIC,7,135,246,10
+    LTEXT           "LiveZoom Toggle:",IDC_STATIC,7,151,62,8
+    CONTROL         "",IDC_LIVE_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,69,149,80,12
+    LTEXT           "",IDC_LIVE_STATUS,7,164,246,10
 END
 
 
-SNIP DIALOGEX 0, 0, 260, 68
+SNIP DIALOGEX 0, 0, 260, 106
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     CONTROL         "",IDC_SNIP_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,55,32,80,12
     LTEXT           "Snip Toggle:",IDC_STATIC,7,33,45,8
-    LTEXT           "Copy a region of the screen to the clipboard or enter the hotkey with the Shift key in the opposite mode to save it to a file. ",IDC_STATIC,7,7,246,19
+    LTEXT           "Copy a region with the hotkey below. Use it with Shift added or removed to save a PNG (Ctrl+Shift+5 by default).",IDC_STATIC,7,7,246,19
+    LTEXT           "Snip works in Zoom, LiveZoom and Draw, including paused drawing. The drawing and its state are preserved. It is ignored during a stroke, the timer, or LiveDraw over LiveZoom.",IDC_STATIC,7,53,246,27
+    LTEXT           "Mode hotkeys are ignored during selection, saving and options.",IDC_STATIC,7,87,246,10
 END
 
 
@@ -284,7 +290,7 @@ BEGIN
     "OPTIONS", DIALOG
     BEGIN
         RIGHTMARGIN, 273
-        BOTTOMMARGIN, 406
+        BOTTOMMARGIN, 424
     END
 
     "ADVANCED_BREAK", DIALOG
@@ -306,7 +312,7 @@ BEGIN
         LEFTMARGIN, 7
         RIGHTMARGIN, 253
         TOPMARGIN, 7
-        BOTTOMMARGIN, 221
+        BOTTOMMARGIN, 239
     END
 
 
@@ -324,7 +330,7 @@ BEGIN
         LEFTMARGIN, 7
         RIGHTMARGIN, 253
         TOPMARGIN, 7
-        BOTTOMMARGIN, 127
+        BOTTOMMARGIN, 169
     END
 
 
@@ -333,7 +339,7 @@ BEGIN
         LEFTMARGIN, 7
         RIGHTMARGIN, 253
         TOPMARGIN, 7
-        BOTTOMMARGIN, 61
+        BOTTOMMARGIN, 99
     END
 
     "ABOUT", DIALOG

@@ -95,6 +95,7 @@
 #endif
 
 #define IDC_LIVE_STATUS 4200
+#define IDC_ANIMATE_LIVE_ZOOM            4201
 
 #define IDC_ABOUT_TITLE                 4210
 #define IDC_ABOUT_VERSION               4211
@@ -108,3 +109,5 @@
 #define IDC_STARTUP_SUPERVISED           4222
 #define IDC_SUPERVISION_STATUS           4223
 #define IDC_STARTUP_HINT                 4224
+
+#define IDC_LIVE_DRAW_HOTKEY             4230

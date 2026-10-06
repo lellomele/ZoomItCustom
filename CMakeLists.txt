@@ -24,6 +24,10 @@ if(BUILD_TESTING)
   target_link_libraries(ZoomItRegression PRIVATE comctl32 comdlg32 shlwapi version winmm gdiplus msimg32 shell32 ole32 oleaut32 advapi32 user32 gdi32 magnification dbghelp psapi)
   add_test(NAME ZoomItRegression COMMAND ZoomItRegression)
   set_tests_properties(ZoomItRegression PROPERTIES TIMEOUT 180)
+  add_test(NAME ZoomItLiveAnimationTests COMMAND ZoomItRegression --live-animation-only)
+  set_tests_properties(ZoomItLiveAnimationTests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+  add_test(NAME ZoomItModePolicyTests COMMAND ZoomItRegression --mode-policy-only)
+  set_tests_properties(ZoomItModePolicyTests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 endif()
 
 

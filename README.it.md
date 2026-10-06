@@ -35,7 +35,7 @@ Se si sposta la cartella, riconfermare la scelta per aggiornare il percorso di a
 
 ## Uso quotidiano
 
-Le scorciatoie si possono modificare nelle opzioni.
+Le scorciatoie si possono modificare nelle opzioni. LiveDraw usa sempre la scorciatoia Draw configurata, con l'aggiunta di Shift; la combinazione attuale è mostrata nella scheda Draw. Scegliere una scorciatoia Draw senza Shift per mantenere distinte le due azioni.
 
 | Scorciatoia iniziale | Azione |
 | --- | --- |
@@ -44,16 +44,26 @@ Le scorciatoie si possono modificare nelle opzioni.
 | Ctrl+3 | Disegno |
 | Ctrl+4 | Pausa con timer |
 | Ctrl+5 | Copia un ritaglio |
-| Ctrl+Shift+2 | LiveDraw |
+| Ctrl+Shift+3 | LiveDraw (scorciatoia Draw + Shift) |
 | Ctrl+Shift+5 | Salva un ritaglio PNG |
 
 Lo Zoom statico blocca l'immagine ingrandita. LiveZoom la aggiorna in tempo reale; LiveDraw permette di disegnare su questa visualizzazione dal vivo.
 
-In LiveZoom, **Ctrl+Su / Ctrl+Giù** regolano l'ingrandimento. **Ctrl+1 viene ignorato** mentre LiveZoom è attivo. **Ctrl+3** passa al disegno su un'immagine bloccata; **Esc** torna a LiveZoom. **Ctrl+2** chiude LiveZoom e l'eventuale LiveDraw attivo.
+Ogni modalità ha la propria checkbox **Animate zoom in and zoom out**. In LiveZoom, attivandola, ingresso, uscita e variazioni di ingrandimento diventano graduali; disattivandola sono immediati. L'opzione LiveZoom parte disattivata e viene salvata indipendentemente da quella dello Zoom.
 
-Nel disegno, **Ctrl+Z** annulla ed **E** cancella le annotazioni. Il primo **clic destro** sospende il disegno e mostra un piccolo cerchio con bordo del colore attivo e interno scuro. Spostare il mouse non aggiunge tratti. Il **clic sinistro** riprende il disegno; un secondo **clic destro** esce da Draw. Anche **Esc** termina la modalità. Nel timer, le frecce regolano la durata ed **Esc** termina la pausa.
+In LiveZoom, **Ctrl+Su / Ctrl+Giù** regolano l'ingrandimento. **Ctrl+3** avvia Draw su un'immagine bloccata; **Ctrl+Shift+3** avvia LiveDraw mantenendo la visualizzazione dal vivo. **Esc** termina il disegno e torna a LiveZoom. **Ctrl+2** esce da LiveZoom solo quando il disegno non è attivo.
 
-Snip funziona anche nello Zoom statico, comprese le annotazioni. Con LiveZoom blocca temporaneamente l'immagine e poi ripristina la visualizzazione dal vivo. Snip non è disponibile mentre LiveDraw è attivo. Nel salvataggio, scegliere **Zoomed PNG** per la dimensione visualizzata oppure **Actual size PNG** per eliminare l'ingrandimento.
+Le scorciatoie di modalità seguono queste regole, anche durante le animazioni dello zoom:
+
+- Dal desktop si può avviare qualsiasi modalità. Nello Zoom statico, le scorciatoie Draw, LiveDraw, LiveZoom e timer sono ignorate; la scorciatoia Zoom esce dallo Zoom.
+- In LiveZoom senza disegno sono disponibili Draw, LiveDraw e Snip; Zoom e timer sono ignorati.
+- Con Draw o LiveDraw attivi o sospesi, le scorciatoie Zoom, LiveZoom, timer e delle modalità di disegno non cambiano nulla. Per terminare il disegno usare i comandi del mouse o Esc.
+- Nel timer è accettata soltanto la sua scorciatoia di modalità; ripremerla riavvia il conto alla rovescia.
+- Durante selezione Snip, salvataggio o opzioni, le scorciatoie di modalità sono ignorate. I comandi ignorati non vengono accodati per eseguirli in seguito.
+
+In Draw e LiveDraw, **Ctrl+Z** annulla ed **E** cancella le annotazioni. Il primo **clic destro** sospende il disegno e mostra un piccolo cerchio con bordo del colore attivo e interno scuro. Spostare il mouse non aggiunge tratti. Il **clic sinistro** riprende il disegno; un secondo **clic destro** esce. Anche **Esc** termina il disegno. LiveDraw non supporta evidenziatore e sfocatura. Nel timer, Su/Giù e rotella regolano i minuti; Sinistra/Destra regolano dieci secondi ed **Esc** termina la pausa.
+
+Snip funziona sul desktop, nello Zoom statico, in LiveZoom e in Draw, anche con disegno sospeso. Dopo cattura o annullamento conserva annotazioni, ingrandimento e stato del disegno. Con LiveZoom blocca temporaneamente l'immagine e poi ripristina la visualizzazione dal vivo. Snip è ignorato durante un tratto in corso, nel timer o con LiveDraw su LiveZoom; resta disponibile con LiveDraw sul desktop. **Ctrl+Shift+5** salva un PNG seguendo le stesse regole. Nel salvataggio, scegliere **Zoomed PNG** per la dimensione visualizzata oppure **Actual size PNG** per eliminare l'ingrandimento.
 
 ## In caso di problemi
 

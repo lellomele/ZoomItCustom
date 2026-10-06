@@ -26,7 +26,7 @@ struct GraphicsSession {
     bool Prepare(RECT monitor,DWORD penWidth,COLORREF color)noexcept{
         const int64_t w=static_cast<int64_t>(monitor.right)-monitor.left,h=static_cast<int64_t>(monitor.bottom)-monitor.top;
         if(w<=0||h<=0||w>32768||h>32768||static_cast<uint64_t>(w)*h*4>512ull*1024*1024)return false;
-#ifdef ZOOMIT_RECOVERY_TESTING
+#if defined(ZOOMIT_RECOVERY_TESTING) || defined(ZOOMIT_TESTING)
         wchar_t failure[8];
         if(GetEnvironmentVariableW(L"ZOOMIT_TEST_FAIL_GDI",failure,8))return false;
 #endif

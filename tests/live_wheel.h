@@ -75,6 +75,8 @@ LiveWheelResults RunLiveWheelRegression(HWND host) {
         const size_t downstream=downstreamWheelEvents;
         CtrlTestWheel(WHEEL_DELTA);waitFor([&]{return level()==2.25f;},"Ctrl+wheel up must increase by exactly one quarter step");
         verifyNative();require(downstreamWheelEvents==downstream,"Consumed Ctrl+wheel must not reach underlying applications or downstream hooks");++results.nativeCases;
+        if(!fullscreen && g_ShowZoomIndicator)require(g_ZoomIndicator.Visible() && g_ZoomIndicator.Factor()==2.25f,
+                "A real native Ctrl+wheel gesture must update the visible zoom indicator");
         CtrlTestWheel(-WHEEL_DELTA,VK_RCONTROL);waitFor([&]{return level()==2.0f;},"Right Ctrl+wheel down must reverse the same step");verifyNative();++results.nativeCases;
         CtrlTestWheel(3*WHEEL_DELTA);waitFor([&]{return level()==2.75f;},"A multi-notch wheel event must use every requested step");++results.nativeCases;
         CtrlTestWheel(-3*WHEEL_DELTA);waitFor([&]{return level()==2.0f;},"Multi-notch reduction must retrace the same levels");++results.nativeCases;
@@ -105,6 +107,10 @@ LiveWheelResults RunLiveWheelRegression(HWND host) {
         CtrlTestWheel(-WHEEL_DELTA);waitFor([&]{return level()==2.0f;},"Return to the partial-input baseline");
         const size_t beforePlain=downstreamWheelEvents;
         InjectTestWheel(WHEEL_DELTA);
+        waitFor([&]{return downstreamWheelEvents>=beforePlain+1;},"A normal wheel must arrive at the downstream native observer");
+        if(downstreamWheelEvents!=beforePlain+1 || level()!=2.0f)
+            std::cerr<<"Plain wheel: fullscreen="<<fullscreen<<" animated="<<animated<<" before="<<beforePlain
+                <<" after="<<downstreamWheelEvents<<" factor="<<level()<<" ctrl="<<(GetAsyncKeyState(VK_CONTROL)&0x8000)<<"\n";
         require(downstreamWheelEvents==beforePlain+1 && level()==2.0f,"Wheel without Ctrl must pass through and retain normal action");++results.passthroughCases;
         InjectTestKey(VK_LCONTROL,false);InjectTestKey(VK_MENU,false);InjectTestWheel(WHEEL_DELTA);
         InjectTestKey(VK_MENU,true);InjectTestKey(VK_LCONTROL,true);

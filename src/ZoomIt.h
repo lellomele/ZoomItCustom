@@ -205,3 +205,5 @@ public:
 
 
 
+
+#define WM_USER_CAN_SHOW_ZOOM_INDICATOR (WM_USER+126)

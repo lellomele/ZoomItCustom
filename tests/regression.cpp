@@ -52,7 +52,16 @@ CURSORINFO ReadOwnedNormalPointer(HWND host,const char* context) {
     // Process the owned window's normal cursor event synchronously, preserving the
     // immediate toggle tests without depending on another application's hover cursor.
     SendMessage(host,WM_SETCURSOR,reinterpret_cast<WPARAM>(host),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
-    CURSORINFO cursor{sizeof(cursor)};const BOOL read=GetCursorInfo(&cursor);
+    CURSORINFO cursor{sizeof(cursor)};BOOL read=GetCursorInfo(&cursor);
+    // Windows may temporarily replace a visible arrow with its process-startup feedback.
+    // Wait only for that documented system cursor, never for a hidden or drawing cursor.
+    const HCURSOR startup=LoadCursor(nullptr,IDC_APPSTARTING);
+    const ULONGLONG feedbackDeadline=GetTickCount64()+3500;
+    while(read && (cursor.flags&CURSOR_SHOWING) && cursor.hCursor==startup && GetTickCount64()<feedbackDeadline) {
+        pump(10);
+        SendMessage(host,WM_SETCURSOR,reinterpret_cast<WPARAM>(host),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+        read=GetCursorInfo(&cursor);
+    }
     const DWORD error=read ? ERROR_SUCCESS : GetLastError();
     if(!read || !(cursor.flags&CURSOR_SHOWING) || cursor.hCursor!=LoadCursor(nullptr,IDC_ARROW)) {
         POINT actual{};GetCursorPos(&actual);const HWND surface=WindowFromPoint(actual);
@@ -146,13 +155,13 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
                 (g_AnimateZoom ? BST_CHECKED : BST_UNCHECKED);
         wchar_t title[128]{}, version[64]{}, copyright[256]{}, lastTab[32]{};
         GetWindowText(dialog,title,_countof(title));
-        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.8")==0;
+        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.9")==0;
         TCITEM item{};item.mask=TCIF_TEXT;item.pszText=lastTab;item.cchTextMax=_countof(lastTab);
         TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),ABOUT_PAGE,&item);
         optionsValid &= wcscmp(lastTab,L"About")==0;
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
-        optionsValid &= wcscmp(version,L"Version 1.1.8")==0 &&
+        optionsValid &= wcscmp(version,L"Version 1.1.9")==0 &&
                         wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr;
         optionsValid &= IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_REPOSITORY)) &&
                         IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_LICENSE));
@@ -1129,6 +1138,7 @@ void PrintModePolicyResults(const ModePolicyResults& result) {
 
 #include "zoom_granularity.h"
 #include "live_wheel.h"
+#include "zoom_indicator.h"
 
 int main(int argc, char** argv) {
     const bool snipOnly = argc>1 && strcmp(argv[1],"--snip-only")==0;
@@ -1136,6 +1146,7 @@ int main(int argc, char** argv) {
     const bool policyOnly = argc>1 && strcmp(argv[1],"--mode-policy-only")==0;
     const bool zoomOnly = argc>1 && strcmp(argv[1],"--zoom-granularity-only")==0;
     const bool wheelOnly = argc>1 && strcmp(argv[1],"--live-wheel-only")==0;
+    const bool indicatorOnly = argc>1 && strcmp(argv[1],"--indicator-only")==0;
     std::wstring capturePath;
     if(argc>2) {capturePath=std::filesystem::absolute(argv[2]).wstring();aboutCapturePath=capturePath.c_str();}
     else {
@@ -1292,6 +1303,11 @@ int main(int argc, char** argv) {
         ShowWindow(host,SW_SHOW);
         ActivateTestHost(host);
         SetCursorPos(125,125);
+        if(indicatorOnly) {
+            const auto indicator=RunIndicatorRegression(host);
+            DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
+            SetCursorPos(oldCursor.x,oldCursor.y);PrintIndicatorResults(indicator);return 0;
+        }
         if(wheelOnly) {
             const auto wheel=RunLiveWheelRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();

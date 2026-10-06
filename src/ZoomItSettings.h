@@ -14,6 +14,7 @@ DWORD   g_LegacySliderZoomLevel = 3;
 DWORD   g_InitialZoomPercent = 0; // Zero means migrate the legacy slider on first read.
 BOOLEAN g_AnimateZoom = TRUE;
 BOOLEAN g_AnimateLiveZoom = FALSE;
+BOOLEAN g_ShowZoomIndicator = TRUE;
 DWORD	g_PenColor = COLOR_RED;
 DWORD	g_BreakPenColor = COLOR_RED;
 DWORD   g_RootPenWidth = PEN_WIDTH;
@@ -61,6 +62,7 @@ REG_SETTING RegSettings[] = {
     { L"ShowTrayIcon", SETTING_TYPE_BOOLEAN, 0, &g_ShowTrayIcon, static_cast<DOUBLE>(g_ShowTrayIcon) },
     { L"AnimnateZoom", SETTING_TYPE_BOOLEAN, 0, &g_AnimateZoom, static_cast<DOUBLE>(g_AnimateZoom) },
     { L"AnimateLiveZoom", SETTING_TYPE_BOOLEAN, 0, &g_AnimateLiveZoom, static_cast<DOUBLE>(g_AnimateLiveZoom) },
+    { L"ShowZoomIndicator", SETTING_TYPE_BOOLEAN, 0, &g_ShowZoomIndicator, 1 },
     { L"TelescopeZoomOut", SETTING_TYPE_BOOLEAN, 0, &g_TelescopeZoomOut, static_cast<DOUBLE>(g_TelescopeZoomOut) },
     { L"SnapToGrid", SETTING_TYPE_BOOLEAN, 0, &g_SnapToGrid, static_cast<DOUBLE>(g_SnapToGrid) },
     { L"ZoominSliderLevel", SETTING_TYPE_DWORD, 0, &g_LegacySliderZoomLevel, 3 },

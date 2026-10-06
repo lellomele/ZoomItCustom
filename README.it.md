@@ -49,6 +49,8 @@ Le scorciatoie si possono modificare nelle opzioni. LiveDraw usa sempre la scorc
 
 Lo Zoom statico blocca l'immagine ingrandita. LiveZoom la aggiorna in tempo reale; LiveDraw permette di disegnare su questa visualizzazione dal vivo.
 
+Un grande indicatore semitrasparente del fattore di zoom appare nell’angolo inferiore destro del **monitor principale** per circa **1,2 secondi** all’ingresso e dopo ogni variazione. Durante le animazioni mostra il valore finale richiesto. Mantiene dimensioni costanti, lascia passare i clic e scompare prima di disegnare, usare Snip o copiare/salvare. Per disattivarlo, togliere la spunta a **Show zoom factor briefly (Zoom and LiveZoom)** nella scheda **Zoom**.
+
 Ogni modalità ha la propria checkbox **Animate zoom in and zoom out**. In LiveZoom, attivandola, ingresso, uscita e variazioni di ingrandimento diventano graduali; disattivandola sono immediati. L'opzione LiveZoom parte disattivata e viene salvata indipendentemente da quella dello Zoom.
 
 La scheda **Zoom** permette di scegliere l’ingrandimento iniziale di Zoom e LiveZoom; il valore appare accanto al selettore. Da **1,25× a 4×**, i comandi procedono per **passi di 0,25×**. In Zoom usare rotella o Su/Giù; in LiveZoom Ctrl+Su / Ctrl+Giù oppure Ctrl+rotellina quando il disegno non è attivo. Sopra 4× restano i livelli 8×, 16× e 32×. Scendendo sotto 1,25× si torna a 1× e LiveZoom rimane attivo. Ulteriori comandi Ctrl+rotellina o Ctrl+Giù vengono gestiti da LiveZoom a quel valore minimo; per uscire usare la sua hotkey (Ctrl+2 per impostazione predefinita). L’ingrandimento iniziale già configurato viene conservato nell’aggiornamento.

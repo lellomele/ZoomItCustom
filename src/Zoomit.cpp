@@ -21,6 +21,7 @@
 #include "GraphicsSession.h"
 #include "Startup.h"
 #include "LiveZoomWheel.h"
+#include "ZoomIndicator.h"
 #include <exception>
 
 
@@ -159,6 +160,8 @@ bool MigrateHotkeys() noexcept {
 
 bool g_SelectionActive = false;
 zoomit::LiveZoomWheel g_LiveZoomWheel;
+zoomit::ZoomIndicator g_ZoomIndicator;
+unsigned g_IndicatorSuppression{};
 
 type_pGetMonitorInfo		pGetMonitorInfo;
 type_MonitorFromPoint		pMonitorFromPoint;
@@ -180,6 +183,33 @@ type_pGetDpiForWindow		pGetDpiForWindow;
 
 type_pSHQueryUserNotificationState	pSHQueryUserNotificationState;
 
+
+// Preserve both exclusions whenever Draw switches its canvas into or out of LiveZoom.
+BOOL SetLiveZoomFilter(HWND canvas,bool excludeCanvas) noexcept {
+    if(!pMagSetWindowFilterList || !IsWindow(g_hWndLiveZoomMag))return FALSE;
+    HWND excluded[2]{};int count=0;
+    if(excludeCanvas && IsWindow(canvas))excluded[count++]=canvas;
+    if(IsWindow(g_ZoomIndicator.Window()))excluded[count++]=g_ZoomIndicator.Window();
+    return pMagSetWindowFilterList(g_hWndLiveZoomMag,MW_FILTERMODE_EXCLUDE,count,count ? excluded : nullptr);
+}
+void ShowZoomIndicator(float factor,HWND context,bool live) noexcept {
+    if(!g_ShowZoomIndicator || g_ZoomIndicator.Failed() || g_IndicatorSuppression || hWndOptions || g_SelectionActive ||
+       g_bSaveInProgress || g_ZoomOnLiveZoom ||
+       !SendMessage(g_hWndMain,WM_USER_CAN_SHOW_ZOOM_INDICATOR,0,0))return;
+    // The legacy fullscreen workaround has no exclusion list. Keep its behaviour intact.
+    // The portable app already disables that path on Windows builds needing UIAccess.
+    if(live && g_fullScreenWorkaround)return;
+    MONITORINFO primary{};primary.cbSize=sizeof(primary);
+    const HMONITOR primaryMonitor=MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY);
+    if(!GetMonitorInfoW(primaryMonitor,&primary)) {
+        const DWORD error=GetLastError();g_ZoomIndicator.Fail();
+        recovery::client.Serious(L"Monitor principale per fattore di zoom",error ? error : ERROR_GEN_FAILURE);return;
+    }
+    DWORD error=g_ZoomIndicator.Ensure();
+    if(!error && IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(g_hWndMain,true))error=ERROR_GEN_FAILURE;
+    if(!error)error=g_ZoomIndicator.Show(factor,primary.rcMonitor,GetDpiForWindowHelper(context));
+    if(error){g_ZoomIndicator.Fail();recovery::client.Serious(L"Visualizzazione fattore di zoom",error);}
+}
 
 void RestoreSystemPointer() noexcept {
     if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
@@ -1423,6 +1453,7 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
             return FALSE;
         }
         g_LiveZoomWheel.SetTarget(nullptr,0,0);
+        g_ZoomIndicator.BeginSession();
         hWndOptions = hDlg;
         SetWindowTextW(hDlg, zoomit::about::WindowTitle());
         fontOwner = hDlg;
@@ -1488,6 +1519,8 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
             g_AnimateZoom ? BST_CHECKED: BST_UNCHECKED );
         CheckDlgButton(g_OptionsTabs[LIVE_PAGE].hPage, IDC_ANIMATE_LIVE_ZOOM,
             g_AnimateLiveZoom ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(g_OptionsTabs[ZOOM_PAGE].hPage,IDC_SHOW_ZOOM_INDICATOR,
+            g_ShowZoomIndicator ? BST_CHECKED : BST_UNCHECKED);
         EnableWindow(GetDlgItem(g_OptionsTabs[LIVE_PAGE].hPage, IDC_ANIMATE_LIVE_ZOOM),
             pMagInitialize != nullptr);
 
@@ -1654,6 +1687,7 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
                 g_LiveZoomToggleKey = newLiveZoomToggleKey;
                 g_LiveZoomToggleMod = newLiveZoomToggleMod;
                 g_AnimateZoom = newAnimateZoom;
+                g_ShowZoomIndicator=IsDlgButtonChecked(g_OptionsTabs[ZOOM_PAGE].hPage,IDC_SHOW_ZOOM_INDICATOR)==BST_CHECKED;
                 g_ShowTrayIcon = newShowTrayIcon;
                 g_ToggleMod = newToggleMod;
                 g_DrawToggleKey = newDrawToggleKey;
@@ -2518,6 +2552,7 @@ LRESULT APIENTRY MainWndProcImpl(
     };
 
     const auto resetToIdle = [&]() {
+        g_ZoomIndicator.BeginSession();
         g_LiveZoomWheel.SetTarget(nullptr,0,0);
         KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3);
         endSuspension();
@@ -2586,10 +2621,16 @@ LRESULT APIENTRY MainWndProcImpl(
         KillTimer(hWnd, 3);
         SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
         if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-            pMagSetWindowFilterList(g_hWndLiveZoomMag, MW_FILTERMODE_EXCLUDE, 1, &hWnd);
+            SetLiveZoomFilter(hWnd,true);
         if (IsWindowVisible(g_hWndLiveZoom))
             SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
     };
+    // Nested Draw/Snip transitions may restore LiveZoom without requesting a new indicator.
+    const bool suppressIndicator=(message==WM_HOTKEY && wParam!=ZOOM_HOTKEY && wParam!=LIVE_HOTKEY) ||
+        (message==WM_COMMAND && (LOWORD(wParam)==IDC_COPY || LOWORD(wParam)==IDC_COPY_CROP ||
+                                LOWORD(wParam)==IDC_SAVE || LOWORD(wParam)==IDC_SAVE_CROP));
+    if(suppressIndicator)++g_IndicatorSuppression;
+    const auto indicatorGuard=zoomit::OnExit([&]{if(suppressIndicator)--g_IndicatorSuppression;});
     bool skipCheckpoint = false;
     bool canvasChangedThisDispatch = false;
     static thread_local unsigned dispatchDepth = 0;
@@ -2618,6 +2659,9 @@ LRESULT APIENTRY MainWndProcImpl(
     });
 
     switch (message) {
+    case WM_USER_CAN_SHOW_ZOOM_INDICATOR:
+        return !g_TimerActive && !g_Drawing && !drawingSuspended && !hWndOptions && !g_SelectionActive &&
+            !g_bSaveInProgress && !captureOperationDepth && !(g_Zoomed && (GetWindowLongPtr(hWnd,GWL_EXSTYLE)&WS_EX_LAYERED));
     case WM_USER_LIVE_ZOOM_WHEEL:
         if(g_LiveZoomWheel.Accept(hWnd,wParam) && wheelEligible())
             SendMessage(g_hWndLiveZoom,WM_USER_LIVE_ZOOM_WHEEL,wParam,lParam);
@@ -2787,7 +2831,7 @@ LRESULT APIENTRY MainWndProcImpl(
                             SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED);
                             SetLayeredWindowAttributes(hWnd, RGB(0,0,0), 0, LWA_COLORKEY);
                             if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                                pMagSetWindowFilterList(g_hWndLiveZoomMag, MW_FILTERMODE_EXCLUDE, 0, nullptr);
+                                SetLiveZoomFilter(hWnd,false);
                             SetTimer(hWnd, 3, 10, nullptr);
                         }
                         if (saved.mode == recovery::Mode::FrozenLiveDraw) {
@@ -2865,6 +2909,9 @@ LRESULT APIENTRY MainWndProcImpl(
             return TRUE;
         }
 
+        g_ZoomIndicator.BeginSession();
+        if(wParam==DRAW_HOTKEY || wParam==LIVE_DRAW_HOTKEY || wParam==SNIP_HOTKEY || wParam==SNIP_SAVE_HOTKEY)
+            g_ZoomIndicator.Hide(true);
         // Keep a running hook during an animated LiveZoom toggle, but discard older input.
         if(wParam==LIVE_HOTKEY && wheelEligible())g_LiveZoomWheel.InvalidatePending();
         else g_LiveZoomWheel.SetTarget(nullptr,0,0);
@@ -2906,7 +2953,7 @@ LRESULT APIENTRY MainWndProcImpl(
                 SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
                 SetLayeredWindowAttributes(hWnd, COLORREF(RGB(0, 0, 0)), 0, LWA_COLORKEY);
                 if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                    pMagSetWindowFilterList(g_hWndLiveZoomMag, MW_FILTERMODE_EXCLUDE, 0, nullptr);
+                    SetLiveZoomFilter(hWnd,false);
             }
             [[fallthrough]];
         }
@@ -3125,7 +3172,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     pSetLayeredWindowAttributes( hWnd, 0, 0, LWA_ALPHA );
                     EnableWindow( g_hWndLiveZoom, FALSE );
                     if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                        pMagSetWindowFilterList(g_hWndLiveZoomMag, MW_FILTERMODE_EXCLUDE, 1, &hWnd);
+                        SetLiveZoomFilter(hWnd,true);
 
                 } else {
 
@@ -3314,6 +3361,7 @@ LRESULT APIENTRY MainWndProcImpl(
                         else
                             zoomLevel = zoomTelescopeTarget;
                         SetTimer( hWnd, 1, ZOOM_LEVEL_STEP_TIME, NULL );
+                        ShowZoomIndicator(zoomTelescopeTarget,hWnd,false);
                     }
 
                 } else {
@@ -3442,6 +3490,7 @@ LRESULT APIENTRY MainWndProcImpl(
                         zoomIn = FALSE;
                         delta = -delta;
                     }
+                    const float previousIndicatorTarget=zoomTelescopeTarget;
                     while (delta--) {
                         const float requested = NextZoomLevel(zoomTelescopeTarget, zoomIn != FALSE);
                         if (requested == zoomTelescopeTarget) continue;
@@ -3459,6 +3508,8 @@ LRESULT APIENTRY MainWndProcImpl(
                         if (zoomLevel != zoomTelescopeTarget)
                             SetTimer(hWnd, 1, ZOOM_LEVEL_STEP_TIME, nullptr);
                     }
+                    if(previousIndicatorTarget!=zoomTelescopeTarget && !g_Drawing && !drawingSuspended)
+                        ShowZoomIndicator(zoomTelescopeTarget,hWnd,false);
                     if( zoomLevel != zoomTelescopeTarget ) {
 
                         if( g_Drawing ) {
@@ -3719,7 +3770,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     LONG_PTR exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
                     SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
                     if (IsWindow(g_hWndLiveZoomMag) && pMagSetWindowFilterList)
-                        pMagSetWindowFilterList(g_hWndLiveZoomMag, MW_FILTERMODE_EXCLUDE, 1, &hWnd);
+                        SetLiveZoomFilter(hWnd,true);
                     SendMessage( g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0 );
                 }
             }
@@ -3946,6 +3997,7 @@ LRESULT APIENTRY MainWndProcImpl(
         return TRUE;
     
     case WM_LBUTTONDOWN:
+        if(g_ZoomIndicator.Visible())g_ZoomIndicator.Hide(true);
         if (drawingSuspended && g_Zoomed && zoomTelescopeTarget == zoomLevel) {
             int left{}, top{};
             GetZoomedTopLeftCoordinates(zoomLevel, &cursorPos, &left, width, &top, height);
@@ -4416,6 +4468,7 @@ LRESULT APIENTRY MainWndProcImpl(
             if (HIWORD(wParam) == 1 && (!g_Zoomed || !userModeAllowed(SNIP_SAVE_HOTKEY))) {
                 skipCheckpoint = true; break;
             }
+            g_ZoomIndicator.Hide(true);
             ++captureOperationDepth;
             const auto captureGuard = zoomit::OnExit([&] { --captureOperationDepth; });
             const auto captureGeneration = sessionGeneration;
@@ -4580,6 +4633,7 @@ LRESULT APIENTRY MainWndProcImpl(
             if (HIWORD(wParam) == 1 && (!g_Zoomed || !userModeAllowed(SNIP_HOTKEY))) {
                 skipCheckpoint = true; break;
             }
+            g_ZoomIndicator.Hide(true);
             ++captureOperationDepth;
             const auto captureGuard = zoomit::OnExit([&] { --captureOperationDepth; });
             const auto captureGeneration = sessionGeneration;
@@ -5118,6 +5172,7 @@ LRESULT APIENTRY MainWndProcImpl(
         return TRUE;
 
     case WM_DESTROY:
+        g_ZoomIndicator.Destroy();
         g_LiveZoomWheel.Shutdown();
         endSuspension();
 
@@ -5220,6 +5275,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         forceTransform=true;
         if(!g_AnimateLiveZoom || !dwmEnabled)zoomLevel=requested;
         SendMessage(hWnd,WM_TIMER,0,0);
+        if(requested!=previousTarget)ShowZoomIndicator(requested,hWnd,true);
     };
     switch (message)  {
     case WM_USER_LIVE_ZOOM_WHEEL:
@@ -5328,8 +5384,10 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                 graphicsFailure(L"Timer LiveZoom"); return 0;
             }
             SendMessage(hWnd, WM_TIMER, 0, 0);
+            ShowZoomIndicator(zoomTelescopeTarget,hWnd,true);
         
         } else {
+            g_ZoomIndicator.Hide();
             g_LiveZoomWheel.SetTarget(nullptr,0,0);
             active = false;
 
@@ -5523,6 +5581,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                     return 0;
                 }
             }
+            g_ZoomIndicator.KeepOnTop();
             if (wasMoving && zoomLevel == zoomTelescopeTarget && IsWindow(g_hWndMain))
                 PostMessage(g_hWndMain, WM_USER_RESTORE_SYSTEM_POINTER, 0, 0);
             }
@@ -5562,6 +5621,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         break;
 
     case WM_USER_TOGGLE_LIVE_ZOOM:
+        g_ZoomIndicator.Hide();
         if (exiting) {
             exiting = false;
             zoomTelescopeTarget = resumeZoom;
@@ -5569,6 +5629,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             prevZoomStepTickCount = 0;
             forceTransform = true;
             SendMessage(hWnd, WM_TIMER, 0, 0);
+            ShowZoomIndicator(zoomTelescopeTarget,hWnd,true);
         } else if (!g_AnimateLiveZoom || !dwmEnabled || zoomLevel <= 1) {
             DestroyWindow(hWnd);
         } else {
@@ -5616,6 +5677,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         }
         break;
     case WM_DESTROY:
+        g_ZoomIndicator.Hide();
         g_LiveZoomWheel.SetTarget(nullptr,0,0);
         active = false;
         holdRestoredView = false;
@@ -5714,6 +5776,9 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                     graphicsFailure(L"Ripristino trasformazione LiveZoom"); return 0;
                 }
             }
+            // Keep a currently displayed label aligned with exact recovery/restore factors.
+            // Draw and Snip have already hidden it, so returning from them does not reopen it.
+            if(g_ZoomIndicator.Visible())ShowZoomIndicator(requestedZoom,hWnd,true);
         }
         break;
 

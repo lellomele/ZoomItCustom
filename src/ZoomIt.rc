@@ -166,7 +166,7 @@ BEGIN
     CONTROL         "",IDC_STATIC,"Static",SS_BLACKFRAME | SS_SUNKEN,7,196,193,1,WS_EX_CLIENTEDGE
 END
 
-ZOOM DIALOGEX 0, 0, 260, 158
+ZOOM DIALOGEX 0, 0, 260, 197
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_CLIPSIBLINGS | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
@@ -179,6 +179,8 @@ BEGIN
     LTEXT           "1.25x",IDC_STATIC,52,126,28,8
     RTEXT           "4.00x",IDC_STATIC,185,126,28,8
     LTEXT           "0.25x steps up to 4x; then 8x, 16x and 32x.",IDC_STATIC,7,144,246,10
+    CONTROL         "Show zoom factor briefly (Zoom and LiveZoom)",IDC_SHOW_ZOOM_INDICATOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,162,246,10
+    LTEXT           "Large translucent text on the main screen for 1.2 seconds. Hidden during drawing and screen snips.",IDC_STATIC,7,178,246,18
     CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,74,116,10
     LTEXT           "Ctrl+C / Ctrl+S: copy / save. Ctrl+Shift+C / Ctrl+Shift+S: copy / save a region. Draw and LiveDraw hotkeys are ignored in Zoom.",IDC_STATIC,7,34,246,17
 END

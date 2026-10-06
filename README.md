@@ -49,6 +49,8 @@ Shortcuts can be changed in the options. LiveDraw always uses the configured Dra
 
 Static Zoom freezes the enlarged image. LiveZoom updates it in real time; LiveDraw lets you draw over that live view.
 
+A large translucent zoom factor appears in the lower-right corner of the **primary monitor** for about **1.2 seconds** on entry and after each adjustment. During animations it shows the requested final value. It stays the same size, lets clicks pass through, and disappears before drawing, Snip or copy/save operations. Disable it with **Show zoom factor briefly (Zoom and LiveZoom)** in the **Zoom** tab.
+
 Each mode has its own **Animate zoom in and zoom out** checkbox. In LiveZoom, checking it makes entry, exit and zoom-level changes gradual; leaving it unchecked applies them instantly. The LiveZoom option starts unchecked and is saved independently of the Zoom option.
 
 Choose the initial magnification for both Zoom and LiveZoom in the **Zoom** tab; the current value appears beside the slider. From **1.25x to 4x**, the controls move in **0.25x steps**. In Zoom, use the wheel or Up/Down; in LiveZoom, use Ctrl+Up / Ctrl+Down or Ctrl+mouse wheel when drawing is inactive. Above 4x, the levels are 8x, 16x and 32x. Reducing below 1.25x returns to 1x and keeps LiveZoom active. Further Ctrl+wheel or Ctrl+Down input stays within LiveZoom at that minimum; use the LiveZoom hotkey (Ctrl+2 by default) to exit. Existing initial magnification settings are preserved when upgrading.

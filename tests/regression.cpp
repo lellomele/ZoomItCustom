@@ -146,13 +146,13 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
                 (g_AnimateZoom ? BST_CHECKED : BST_UNCHECKED);
         wchar_t title[128]{}, version[64]{}, copyright[256]{}, lastTab[32]{};
         GetWindowText(dialog,title,_countof(title));
-        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.7")==0;
+        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.8")==0;
         TCITEM item{};item.mask=TCIF_TEXT;item.pszText=lastTab;item.cchTextMax=_countof(lastTab);
         TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),ABOUT_PAGE,&item);
         optionsValid &= wcscmp(lastTab,L"About")==0;
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
-        optionsValid &= wcscmp(version,L"Version 1.1.7")==0 &&
+        optionsValid &= wcscmp(version,L"Version 1.1.8")==0 &&
                         wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr;
         optionsValid &= IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_REPOSITORY)) &&
                         IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_LICENSE));
@@ -1128,12 +1128,14 @@ void PrintModePolicyResults(const ModePolicyResults& result) {
 }
 
 #include "zoom_granularity.h"
+#include "live_wheel.h"
 
 int main(int argc, char** argv) {
     const bool snipOnly = argc>1 && strcmp(argv[1],"--snip-only")==0;
     const bool animationOnly = argc>1 && strcmp(argv[1],"--live-animation-only")==0;
     const bool policyOnly = argc>1 && strcmp(argv[1],"--mode-policy-only")==0;
     const bool zoomOnly = argc>1 && strcmp(argv[1],"--zoom-granularity-only")==0;
+    const bool wheelOnly = argc>1 && strcmp(argv[1],"--live-wheel-only")==0;
     std::wstring capturePath;
     if(argc>2) {capturePath=std::filesystem::absolute(argv[2]).wstring();aboutCapturePath=capturePath.c_str();}
     else {
@@ -1290,6 +1292,13 @@ int main(int argc, char** argv) {
         ShowWindow(host,SW_SHOW);
         ActivateTestHost(host);
         SetCursorPos(125,125);
+        if(wheelOnly) {
+            const auto wheel=RunLiveWheelRegression(host);
+            DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
+            SetCursorPos(oldCursor.x,oldCursor.y);
+            PrintLiveWheelResults(wheel);
+            return 0;
+        }
         if(zoomOnly) {
             const auto zoom=RunZoomGranularityRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();

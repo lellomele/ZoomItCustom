@@ -20,6 +20,7 @@
 #include "Recovery.h"
 #include "GraphicsSession.h"
 #include "Startup.h"
+#include "LiveZoomWheel.h"
 #include <exception>
 
 
@@ -157,6 +158,7 @@ bool MigrateHotkeys() noexcept {
 }
 
 bool g_SelectionActive = false;
+zoomit::LiveZoomWheel g_LiveZoomWheel;
 
 type_pGetMonitorInfo		pGetMonitorInfo;
 type_MonitorFromPoint		pMonitorFromPoint;
@@ -1420,6 +1422,7 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
             EndDialog( hDlg, 0 );
             return FALSE;
         }
+        g_LiveZoomWheel.SetTarget(nullptr,0,0);
         hWndOptions = hDlg;
         SetWindowTextW(hDlg, zoomit::about::WindowTitle());
         fontOwner = hDlg;
@@ -2515,6 +2518,7 @@ LRESULT APIENTRY MainWndProcImpl(
     };
 
     const auto resetToIdle = [&]() {
+        g_LiveZoomWheel.SetTarget(nullptr,0,0);
         KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3);
         endSuspension();
         if (IsWindow(g_hWndLiveZoom)) DestroyWindow(g_hWndLiveZoom);
@@ -2598,11 +2602,32 @@ LRESULT APIENTRY MainWndProcImpl(
         const bool changed = canvasChangedThisDispatch || message == WM_HOTKEY || message == WM_LBUTTONUP || message == WM_USER_EXIT_MODE || message == WM_USER_EXIT_ZOOM ||
             message == WM_KEYDOWN || message == WM_COMMAND || message == recovery::RestoreMessage;
         if (changed || message == WM_MOUSEWHEEL || message == WM_TIMER || message == recovery::ResetMessage ||
-            message == WM_USER_RESTORE_SYSTEM_POINTER)
+            message == WM_USER_RESTORE_SYSTEM_POINTER || message == WM_USER_LIVE_ZOOM_WHEEL)
             publish(changed);
     });
 
+    const auto wheelEligible = [&]() noexcept {
+        return IsWindowVisible(g_hWndLiveZoom) && !g_Zoomed && !g_TimerActive && !g_Drawing &&
+            !drawingSuspended && !hWndOptions && !g_SelectionActive && !g_bSaveInProgress && !captureOperationDepth;
+    };
+    const auto syncWheelAtReturn = zoomit::OnExit([&] {
+        if(dispatchDepth!=1)return;
+        const HWND target=std::uncaught_exceptions()==exceptions && wheelEligible() ? hWnd : nullptr;
+        const DWORD error=g_LiveZoomWheel.SetTarget(target,WM_USER_LIVE_ZOOM_WHEEL,WM_USER_LIVE_ZOOM_WHEEL_ERROR);
+        if(error)recovery::client.Serious(L"Avvio controllo rotellina LiveZoom",error);
+    });
+
     switch (message) {
+    case WM_USER_LIVE_ZOOM_WHEEL:
+        if(g_LiveZoomWheel.Accept(hWnd,wParam) && wheelEligible())
+            SendMessage(g_hWndLiveZoom,WM_USER_LIVE_ZOOM_WHEEL,wParam,lParam);
+        return 0;
+    case WM_USER_LIVE_ZOOM_WHEEL_ERROR:
+        if(g_LiveZoomWheel.Accept(hWnd,wParam)) {
+            g_LiveZoomWheel.MarkFailed(hWnd,wParam);
+            recovery::client.Serious(L"Controllo rotellina LiveZoom non disponibile",static_cast<DWORD>(lParam));
+        }
+        return 0;
     case WM_CREATE:
 
         // get default font
@@ -2839,6 +2864,10 @@ LRESULT APIENTRY MainWndProcImpl(
             skipCheckpoint = true;
             return TRUE;
         }
+
+        // Keep a running hook during an animated LiveZoom toggle, but discard older input.
+        if(wParam==LIVE_HOTKEY && wheelEligible())g_LiveZoomWheel.InvalidatePending();
+        else g_LiveZoomWheel.SetTarget(nullptr,0,0);
 
         //
         // Magic value that comes from tray context menu
@@ -3383,6 +3412,8 @@ LRESULT APIENTRY MainWndProcImpl(
         break;
 
     case WM_MOUSEWHEEL:
+        // A paused frozen LiveZoom drawing must not turn Ctrl+wheel into static zoom.
+        if(drawingSuspended && g_ZoomOnLiveZoom && (LOWORD(wParam)&MK_CONTROL))return TRUE;
 
         //
         // Zoom or modify break timer
@@ -4644,6 +4675,7 @@ LRESULT APIENTRY MainWndProcImpl(
 
 
         case IDC_OPTIONS:
+            g_LiveZoomWheel.SetTarget(nullptr,0,0);
             // Don't show win32 forms options if started by PowerToys.
             // Show the PowerToys Settings application instead.
 
@@ -5086,6 +5118,7 @@ LRESULT APIENTRY MainWndProcImpl(
         return TRUE;
 
     case WM_DESTROY:
+        g_LiveZoomWheel.Shutdown();
         endSuspension();
 
         KillTimer(hWnd, 0); KillTimer(hWnd, 1); KillTimer(hWnd, 2); KillTimer(hWnd, 3);
@@ -5169,7 +5202,37 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         recovery::client.Serious(operation, error ? error : ERROR_GEN_FAILURE);
         PostMessage(g_hWndMain, recovery::ResetMessage, 0, 0);
     };
+    static ULONG_PTR wheelEpoch{};
+    static int wheelRemainder{};
+    const auto adjustZoom = [&](int steps) {
+        if(!steps || hWndOptions || g_SelectionActive || g_bSaveInProgress)return;
+        holdRestoredView=false;
+        const float previousTarget=exiting ? resumeZoom : zoomTelescopeTarget;
+        float requested=previousTarget;
+        const bool increase=steps>0;
+        const int count=(std::min)(steps>0 ? steps : -steps,16);
+        for(int i=0;i<count;++i)requested=NextZoomLevel(requested,increase);
+        // Reaching 1x changes magnification; only an explicit toggle requests exit.
+        exiting=false;
+        zoomTelescopeTarget=resumeZoom=requested;
+        zoomTelescopeStep=ZoomAnimationStep(zoomLevel,requested);
+        prevZoomStepTickCount=0;
+        forceTransform=true;
+        if(!g_AnimateLiveZoom || !dwmEnabled)zoomLevel=requested;
+        SendMessage(hWnd,WM_TIMER,0,0);
+    };
     switch (message)  {
+    case WM_USER_LIVE_ZOOM_WHEEL:
+        if(!g_LiveZoomWheel.Accept(g_hWndMain,wParam) || !active || !IsWindowVisible(hWnd))return 0;
+        if(wheelEpoch!=wParam) {wheelEpoch=wParam;wheelRemainder=0;}
+        if(!lParam) {wheelRemainder=0;return 0;}
+        wheelRemainder+=static_cast<SHORT>(lParam);
+        {
+            const int steps=wheelRemainder/WHEEL_DELTA;
+            wheelRemainder%=WHEEL_DELTA;
+            adjustZoom(steps);
+        }
+        return 0;
     case WM_CREATE:
 
         // Initialize
@@ -5267,6 +5330,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             SendMessage(hWnd, WM_TIMER, 0, 0);
         
         } else {
+            g_LiveZoomWheel.SetTarget(nullptr,0,0);
             active = false;
 
             KillTimer( hWnd, 0 );
@@ -5336,7 +5400,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
 
                     zoomLevel *= zoomTelescopeStep;
                 }				
-                // Apply the final 1x frame before tearing down the magnifier.
+                // Apply the final frame, including 1x while LiveZoom remains active.
                 matrix.v[0][0] = zoomLevel;
                 matrix.v[0][2] = (static_cast<float>(-lastSourceRect.left) * zoomLevel);
                 matrix.v[1][1] = zoomLevel;
@@ -5446,8 +5510,8 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                 InvalidateRect(g_hWndLiveZoomMag, NULL, TRUE);
             }
 
-            // are we done zooming?
-            if (zoomLevel == 1 && zoomTelescopeTarget == 1) {
+            // Only an explicit exit tears down the magnifier after its final 1x frame.
+            if (exiting && zoomLevel == 1 && zoomTelescopeTarget == 1) {
 
                 if( g_OsVersion < WIN7_VERSION ) {
 
@@ -5528,21 +5592,9 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         SendMessage(hWnd, WM_TIMER, 0, 0);
         return 0;
 
-    case WM_HOTKEY: {
-        if (hWndOptions || g_SelectionActive || g_bSaveInProgress) return 0;
-        holdRestoredView = false;
-        const float previousTarget = exiting ? resumeZoom : zoomTelescopeTarget;
-        if (wParam != 0 && wParam != 1) return 0;
-        const float newZoomLevel = NextZoomLevel(previousTarget, wParam == 0);
-        resumeZoom = previousTarget;
-        exiting = newZoomLevel == 1.0f;
-        zoomTelescopeTarget = newZoomLevel;
-        zoomTelescopeStep = ZoomAnimationStep(zoomLevel, newZoomLevel);
-        prevZoomStepTickCount = 0;
-        forceTransform = true;
-        if (!g_AnimateLiveZoom || !dwmEnabled) zoomLevel = newZoomLevel;
-        SendMessage(hWnd, WM_TIMER, 0, 0);
-        }
+    case WM_HOTKEY:
+        wheelRemainder=0;
+        if(wParam==0 || wParam==1)adjustZoom(wParam==0 ? 1 : -1);
         return 0;
 
     // NOTE: keyboard and mouse input actually don't get sent to us at all when in live zoom mode
@@ -5564,6 +5616,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         }
         break;
     case WM_DESTROY:
+        g_LiveZoomWheel.SetTarget(nullptr,0,0);
         active = false;
         holdRestoredView = false;
         exiting = false;

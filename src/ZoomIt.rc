@@ -225,19 +225,20 @@ END
 
 
 
-LIVEZOOM DIALOGEX 0, 0, 260, 176
+LIVEZOOM DIALOGEX 0, 0, 260, 197
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     LTEXT           "LiveZoom mode is supported on updated Windows 10 and Windows 11 where window updates show while zoomed. ",IDC_STATIC,7,7,246,18
-    LTEXT           "Ctrl+Up / Ctrl+Down change magnification. Draw (Ctrl+3 by default) freezes the view; Escape returns to LiveZoom. The Zoom hotkey is ignored, including while drawing.",IDC_STATIC,7,30,246,27
+    LTEXT           "Ctrl+Up / Ctrl+Down or Ctrl+mouse wheel adjust zoom. Draw (Ctrl+3 by default) freezes the view; Escape returns to LiveZoom. The Zoom hotkey is ignored.",IDC_STATIC,7,30,246,27
     LTEXT           "LiveDraw keeps the view live: use Draw + Shift (Ctrl+Shift+3 by default; see Draw tab). Escape ends drawing. Zoom, LiveZoom and timer hotkeys are ignored during Draw or LiveDraw, even when paused.",IDC_STATIC,7,62,246,32
     CONTROL         "Animate zoom in and zoom out:",IDC_ANIMATE_LIVE_ZOOM,"Button",BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP,7,99,116,10
     LTEXT           "Smoothly magnify on entry and return to normal size on exit. Unchecked: change instantly.",IDC_STATIC,7,113,246,18
-    LTEXT           "The hotkey below toggles LiveZoom when drawing is inactive.",IDC_STATIC,7,135,246,10
+    LTEXT           "At 1x, LiveZoom stays active. Use its hotkey to exit.",IDC_STATIC,7,135,246,10
     LTEXT           "LiveZoom Toggle:",IDC_STATIC,7,151,62,8
     CONTROL         "",IDC_LIVE_HOTKEY,"msctls_hotkey32",WS_BORDER | WS_TABSTOP,69,149,80,12
-    LTEXT           "",IDC_LIVE_STATUS,7,164,246,10
+    LTEXT           "Ctrl+wheel zoom is disabled during active or paused Draw/LiveDraw, Snip and options. Without Ctrl, the wheel keeps its usual action.",IDC_STATIC,7,164,246,27
+    LTEXT           "",IDC_LIVE_STATUS,7,192,246,10
 END
 
 

@@ -64,6 +64,8 @@ type_pEnableThemeDialogTexture    pEnableThemeDialogTexture;
 #define WM_USER_TOGGLE_LIVE_ZOOM (WM_USER+121)
 #define WM_USER_FINISH_LIVE_ZOOM_ANIMATION (WM_USER+122)
 #define WM_USER_EXIT_ZOOM (WM_USER+123)
+#define WM_USER_LIVE_ZOOM_WHEEL (WM_USER+124)
+#define WM_USER_LIVE_ZOOM_WHEEL_ERROR (WM_USER+125)
 
 typedef struct _DRAW_UNDO {
     HDC			hDc;

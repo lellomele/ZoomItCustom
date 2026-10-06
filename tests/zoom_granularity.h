@@ -210,8 +210,35 @@ ZoomGranularityResults RunZoomGranularityRegression(HWND host) {
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);
         waitFor([&]{return liveLevel()==1.25f;},"Rapid mixed LiveZoom requests must return to the original target");++results.reversalCases;
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);
-        waitFor([]{return !IsWindow(g_hWndLiveZoom);},"Reducing below 1.25x must return to the desktop and complete LiveZoom exit");
-        ReadOwnedNormalPointer(host,"Exit below fine zoom range");++results.liveCases;clean();
+        waitFor([&]{return liveLevel()==1.0f;},"Ctrl+Down must reach 1x while keeping LiveZoom active");verifyNative();
+        const HWND floorWindow=g_hWndLiveZoom;
+        for(int i=0;i<5;++i)SendMessage(floorWindow,WM_HOTKEY,1,0);
+        pump(100);
+        require(g_hWndLiveZoom==floorWindow && IsWindowVisible(floorWindow) && liveLevel()==1.0f,
+                "Repeated Ctrl+Down at 1x must retain the active live session");verifyNative();++results.liveCases;
+        SendMessage(floorWindow,WM_HOTKEY,0,0);
+        waitFor([&]{return liveLevel()==1.25f;},"Ctrl+Up must resume enlargement from the active 1x minimum");++results.liveCases;
+        SendMessage(floorWindow,WM_USER_SET_ZOOM,EncodeZoomLevel(1.0f),0);pump(100);
+        require(g_hWndLiveZoom==floorWindow && IsWindowVisible(floorWindow) && liveLevel()==1.0f,
+                "Restoring an exact 1x factor must retain LiveZoom rather than trigger implicit exit");verifyNative();++results.liveCases;
+        // Capture and drawing must preserve the active 1x state as they do other factors.
+        cancelSnip=true;SetTimer(nullptr,0,15,SelectTestRegion);
+        SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0);cancelSnip=false;pump(50);
+        require(IsWindowVisible(g_hWndLiveZoom) && liveLevel()==1.0f,"Snip cancellation must restore active LiveZoom at 1x");++results.liveCases;
+        for(bool liveDraw:{false,true}) {
+            SendMessage(g_hWndMain,WM_HOTKEY,liveDraw ? LIVE_DRAW_HOTKEY : DRAW_HOTKEY,0);
+            SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(150,150));pump(40);
+            require(IsWindowVisible(g_hWndMain) && (SendMessage(g_hWndMain,WM_TEST_QUERY_MODE,0,0)&3)==3,
+                    "Draw and LiveDraw must remain available over the active 1x live view");
+            SendMessage(g_hWndMain,WM_RBUTTONDOWN,0,0);SendMessage(g_hWndMain,WM_RBUTTONUP,0,0);pump(40);
+            require((SendMessage(g_hWndMain,WM_TEST_QUERY_MODE,0,0)&16)!=0,"Drawing over 1x must support suspension");
+            SendMessage(g_hWndMain,WM_KEYDOWN,VK_ESCAPE,0);pump(80);
+            require(IsWindowVisible(g_hWndLiveZoom) && liveLevel()==1.0f && !IsWindowVisible(g_hWndMain),
+                    "Ending active or suspended drawing must return to active LiveZoom at 1x");verifyNative();++results.liveCases;
+        }
+        SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
+        waitFor([]{return !IsWindow(g_hWndLiveZoom);},"The explicit LiveZoom hotkey must exit the active 1x view");
+        ReadOwnedNormalPointer(host,"Explicit exit at minimum zoom");++results.liveCases;clean();
     }
     require(NextZoomLevel(32.0f,true)==32.0f && NextZoomLevel(1.0f,false)==1.0f,
             "Supported zoom boundaries must remain bounded");

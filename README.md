@@ -51,6 +51,8 @@ Static Zoom freezes the enlarged image. LiveZoom updates it in real time; LiveDr
 
 Each mode has its own **Animate zoom in and zoom out** checkbox. In LiveZoom, checking it makes entry, exit and zoom-level changes gradual; leaving it unchecked applies them instantly. The LiveZoom option starts unchecked and is saved independently of the Zoom option.
 
+Choose the initial magnification for both Zoom and LiveZoom in the **Zoom** tab; the current value appears beside the slider. From **1.25x to 4x**, the controls move in **0.25x steps**. In Zoom, use the wheel or Up/Down; in LiveZoom, use Ctrl+Up / Ctrl+Down. Above 4x, the levels are 8x, 16x and 32x. Reducing below 1.25x returns to 1x and exits LiveZoom. Existing initial magnification settings are preserved when upgrading.
+
 In LiveZoom, **Ctrl+Up / Ctrl+Down** adjust magnification. **Ctrl+3** starts Draw on a frozen image; **Ctrl+Shift+3** starts LiveDraw without freezing the view. **Esc** ends drawing and returns to LiveZoom. **Ctrl+2** exits LiveZoom only when drawing is inactive.
 
 Mode shortcuts follow these rules, also during zoom animations:

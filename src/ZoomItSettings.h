@@ -9,7 +9,9 @@ DWORD	g_BreakToggleKey = ((HOTKEYF_CONTROL) << 8)| '4';
 DWORD   g_SnipToggleKey = ((HOTKEYF_CONTROL) << 8) | '5';
 
 DWORD	g_ShowExpiredTime = 1;
-DWORD	g_SliderZoomLevel = 3;
+DWORD	g_SliderZoomLevel = 3; // Runtime index into the fine-grained initial levels.
+DWORD   g_LegacySliderZoomLevel = 3;
+DWORD   g_InitialZoomPercent = 0; // Zero means migrate the legacy slider on first read.
 BOOLEAN g_AnimateZoom = TRUE;
 BOOLEAN g_AnimateLiveZoom = FALSE;
 DWORD	g_PenColor = COLOR_RED;
@@ -61,7 +63,8 @@ REG_SETTING RegSettings[] = {
     { L"AnimateLiveZoom", SETTING_TYPE_BOOLEAN, 0, &g_AnimateLiveZoom, static_cast<DOUBLE>(g_AnimateLiveZoom) },
     { L"TelescopeZoomOut", SETTING_TYPE_BOOLEAN, 0, &g_TelescopeZoomOut, static_cast<DOUBLE>(g_TelescopeZoomOut) },
     { L"SnapToGrid", SETTING_TYPE_BOOLEAN, 0, &g_SnapToGrid, static_cast<DOUBLE>(g_SnapToGrid) },
-    { L"ZoominSliderLevel", SETTING_TYPE_DWORD, 0, &g_SliderZoomLevel, static_cast<DOUBLE>(g_SliderZoomLevel) },
+    { L"ZoominSliderLevel", SETTING_TYPE_DWORD, 0, &g_LegacySliderZoomLevel, 3 },
+    { L"InitialZoomPercent", SETTING_TYPE_DWORD, 0, &g_InitialZoomPercent, 0 },
     { L"Font", SETTING_TYPE_BINARY, sizeof g_LogFont, &g_LogFont, static_cast<DOUBLE>(0) },
     { NULL, SETTING_TYPE_DWORD, 0, NULL, static_cast<DOUBLE>(0) }
 };

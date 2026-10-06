@@ -56,14 +56,44 @@ OPTION_TABS g_OptionsTabs[] = {
     { _T("About"), NULL }
 };
 
-float g_ZoomLevels[] = {
-    1.25,
-    1.50,
-    1.75,
-    2.00,
-    3.00,
-    4.00
+constexpr float g_ZoomLevels[] = {
+    1.25f, 1.50f, 1.75f, 2.00f, 2.25f, 2.50f,
+    2.75f, 3.00f, 3.25f, 3.50f, 3.75f, 4.00f
 };
+
+float NextZoomLevel(float current, bool increase) noexcept {
+    if (!std::isfinite(current)) current = 2.0f;
+    current = (std::clamp)(current, float{ZOOM_LEVEL_MIN}, float{ZOOM_LEVEL_MAX});
+    // Use the requested target, never an intermediate animation frame.
+    if (increase) {
+        if (current < 4.0f) return (std::floor(current * 4.0f) + 1.0f) * 0.25f;
+        return (std::min)(current * 2.0f, float{ZOOM_LEVEL_MAX});
+    }
+    if (current <= 4.0f)
+        return (std::max)((std::ceil(current * 4.0f) - 1.0f) * 0.25f, float{ZOOM_LEVEL_MIN});
+    return (std::max)(current * 0.5f, 4.0f);
+}
+
+float ZoomAnimationStep(float current, float target) noexcept {
+    // Preserve a short visible transition for quarter-step changes on the existing timer.
+    if (current >= 1.0f && current <= 4.0f && target >= 1.0f && target <= 4.0f &&
+        std::fabs(target - current) > 0.000001f && std::fabs(target - current) <= 0.2501f)
+        return std::pow(target / current, 0.25f);
+    return target >= current ? ZOOM_LEVEL_STEP_IN : ZOOM_LEVEL_STEP_OUT;
+}
+
+void SetInitialZoomIndex(DWORD index) noexcept {
+    g_SliderZoomLevel = index < _countof(g_ZoomLevels) ? index : 3;
+    g_InitialZoomPercent = 125 + g_SliderZoomLevel * 25;
+    // Keep the old preference readable by earlier versions (nearest legacy level).
+    constexpr DWORD legacyPercent[]{125, 150, 175, 200, 300, 400};
+    DWORD bestDistance = MAXDWORD;
+    for (DWORD i = 0; i < _countof(legacyPercent); ++i) {
+        const DWORD distance = g_InitialZoomPercent > legacyPercent[i] ?
+            g_InitialZoomPercent - legacyPercent[i] : legacyPercent[i] - g_InitialZoomPercent;
+        if (distance < bestDistance) { bestDistance = distance; g_LegacySliderZoomLevel = i; }
+    }
+}
 
 //
 
@@ -155,7 +185,15 @@ void RestoreSystemPointer() noexcept {
 }
 
 void ValidateSettings() noexcept {
-    if (g_SliderZoomLevel >= _countof(g_ZoomLevels)) g_SliderZoomLevel = 3;
+    constexpr DWORD legacyPercent[]{125, 150, 175, 200, 300, 400};
+    if (!g_InitialZoomPercent) {
+        // Missing new preference: map the old six-position slider by value.
+        g_InitialZoomPercent = g_LegacySliderZoomLevel < _countof(legacyPercent) ?
+            legacyPercent[g_LegacySliderZoomLevel] : 200;
+    }
+    const bool validZoom = g_InitialZoomPercent >= 125 && g_InitialZoomPercent <= 400 &&
+        (g_InitialZoomPercent - 125) % 25 == 0;
+    SetInitialZoomIndex(validZoom ? (g_InitialZoomPercent - 125) / 25 : 3);
     g_RootPenWidth = (std::clamp)(g_RootPenWidth, DWORD{1}, DWORD{19});
 
     g_BreakTimeout = (std::clamp)(g_BreakTimeout, DWORD{1}, DWORD{99});
@@ -1198,7 +1236,19 @@ void UpdateLiveDrawHotkeyLabel(HWND page) {
     SetDlgItemTextW(page, IDC_LIVE_DRAW_HOTKEY, text.c_str());
 }
 
+void UpdateInitialZoomLabel(HWND page) noexcept {
+    const auto index = static_cast<DWORD>(SendDlgItemMessage(page, IDC_ZOOM_SLIDER, TBM_GETPOS, 0, 0));
+    const DWORD percent = 125 + (std::min)(index, DWORD{_countof(g_ZoomLevels) - 1}) * 25;
+    wchar_t text[32]{};
+    swprintf_s(text, L"%u.%02ux", percent / 100, percent % 100);
+    SetDlgItemTextW(page, IDC_INITIAL_ZOOM_VALUE, text);
+}
+
 INT_PTR CALLBACK OptionsTabProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_HSCROLL && reinterpret_cast<HWND>(lParam) == GetDlgItem(dialog, IDC_ZOOM_SLIDER)) {
+        UpdateInitialZoomLabel(dialog);
+        return TRUE;
+    }
     if (message == WM_INITDIALOG) { zoomit::about::Initialize(dialog); return TRUE; }
     if (message == WM_NOTIFY && zoomit::about::HandleLink(dialog, lParam)) return TRUE;
     if (message == WM_COMMAND && LOWORD(wParam) == IDC_DRAW_HOTKEY && HIWORD(wParam) == EN_CHANGE) {
@@ -1440,6 +1490,8 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
 
         SendMessage( GetDlgItem(g_OptionsTabs[ZOOM_PAGE].hPage, IDC_ZOOM_SLIDER), TBM_SETRANGE, false, MAKELONG(0,_countof(g_ZoomLevels)-1) );
         SendMessage( GetDlgItem(g_OptionsTabs[ZOOM_PAGE].hPage, IDC_ZOOM_SLIDER), TBM_SETPOS, true, g_SliderZoomLevel );
+        SendDlgItemMessage(g_OptionsTabs[ZOOM_PAGE].hPage, IDC_ZOOM_SLIDER, TBM_SETTICFREQ, 1, 0);
+        UpdateInitialZoomLabel(g_OptionsTabs[ZOOM_PAGE].hPage);
 
         _stprintf( text, L"%d", g_PenWidth );
         SetDlgItemText( g_OptionsTabs[DRAW_PAGE].hPage, IDC_PEN_WIDTH, text );
@@ -1537,7 +1589,8 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
                 break;
             }
 
-            g_SliderZoomLevel = static_cast<int>(SendMessage( GetDlgItem(g_OptionsTabs[ZOOM_PAGE].hPage, IDC_ZOOM_SLIDER), TBM_GETPOS, 0, 0 ));
+            const DWORD newSliderZoomLevel = static_cast<DWORD>(SendDlgItemMessage(
+                g_OptionsTabs[ZOOM_PAGE].hPage, IDC_ZOOM_SLIDER, TBM_GETPOS, 0, 0));
 
 
             g_ShowExpiredTime = IsDlgButtonChecked(  g_OptionsTabs[BREAK_PAGE].hPage, IDC_CHECK_SHOW_EXPIRED ) == BST_CHECKED;
@@ -1609,6 +1662,7 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
                 g_SnipToggleKey = newSnipToggleKey;
                 g_SnipToggleMod = newSnipToggleMod;
                 g_AnimateLiveZoom = newAnimateLiveZoom;
+                SetInitialZoomIndex(newSliderZoomLevel);
                 PersistSettings();
                 EnableDisableTrayIcon( GetParent( hDlg ), g_ShowTrayIcon );
 
@@ -2559,8 +2613,12 @@ LRESULT APIENTRY MainWndProcImpl(
         DeleteDC( hDc );
 
         reg.ReadRegSettings( RegSettings );
-        if (MigrateHotkeys()) PersistSettings();
-        ValidateSettings();
+        {
+            const bool migratedHotkeys = MigrateHotkeys();
+            const bool migratedZoom = !g_InitialZoomPercent;
+            ValidateSettings();
+            if (migratedHotkeys || migratedZoom) PersistSettings();
+        }
         
         // to support migrating from 
         if ((g_PenColor >> 24) == 0) {
@@ -3353,63 +3411,22 @@ LRESULT APIENTRY MainWndProcImpl(
                         zoomIn = FALSE;
                         delta = -delta;
                     }
-                    while( delta-- ) {
-
-                        if( zoomIn ) {
-                            
-                            if( zoomTelescopeTarget < ZOOM_LEVEL_MAX ) {
-
-                                if( zoomTelescopeTarget < 2 ) {
-
-                                    zoomTelescopeTarget = 2;
-
-                                } else {
-                            
-                                    // Start telescoping zoom
-                                    zoomTelescopeTarget = zoomTelescopeTarget * 2; 
-                                }
-                                zoomTelescopeStep = ZOOM_LEVEL_STEP_IN; 
-                                if( g_AnimateZoom ) 
-                                    zoomLevel *= zoomTelescopeStep; 
-                                else
-                                    zoomLevel = zoomTelescopeTarget;
-
-                                if( zoomLevel > zoomTelescopeTarget ) 
-                                    zoomLevel = zoomTelescopeTarget;
-                                else
-                                    SetTimer( hWnd, 1, ZOOM_LEVEL_STEP_TIME, NULL );
-                            }
-
-                        } else if( zoomTelescopeTarget > ZOOM_LEVEL_MIN ) {
-
-                            // Let them more gradually zoom out from 2x to 1x
-                            if( zoomTelescopeTarget <= 2 ) {
-
-                                zoomTelescopeTarget *= .75; 
-                                if( zoomTelescopeTarget < ZOOM_LEVEL_MIN ) 
-                                    zoomTelescopeTarget = ZOOM_LEVEL_MIN;
-
-                            } else {
-
-                                zoomTelescopeTarget = zoomTelescopeTarget/2; 
-                            }
-                            zoomTelescopeStep = ZOOM_LEVEL_STEP_OUT; 
-                            if( g_AnimateZoom ) 
-                                zoomLevel *= zoomTelescopeStep; 
-                            else
-                                zoomLevel = zoomTelescopeTarget;
-
-                            if( zoomLevel < zoomTelescopeTarget )
-                            {
-                                zoomLevel = zoomTelescopeTarget;
-                                // Force update on final step out
-                                InvalidateRect( hWnd, NULL, FALSE );
-                            }
-                            else
-                            {
-                                SetTimer( hWnd, 1, ZOOM_LEVEL_STEP_TIME, NULL );
-                            }
+                    while (delta--) {
+                        const float requested = NextZoomLevel(zoomTelescopeTarget, zoomIn != FALSE);
+                        if (requested == zoomTelescopeTarget) continue;
+                        zoomTelescopeTarget = requested;
+                        zoomTelescopeStep = ZoomAnimationStep(zoomLevel, zoomTelescopeTarget);
+                        if (g_AnimateZoom) {
+                            zoomLevel *= zoomTelescopeStep;
+                            zoomLevel = zoomTelescopeStep >= 1.0f ? (std::min)(zoomLevel, zoomTelescopeTarget) :
+                                (std::max)(zoomLevel, zoomTelescopeTarget);
+                        } else {
+                            zoomLevel = zoomTelescopeTarget;
                         }
+                        // Also redraw immediate changes; there is no timer to do it later.
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                        if (zoomLevel != zoomTelescopeTarget)
+                            SetTimer(hWnd, 1, ZOOM_LEVEL_STEP_TIME, nullptr);
                     }
                     if( zoomLevel != zoomTelescopeTarget ) {
 
@@ -5515,19 +5532,12 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         if (hWndOptions || g_SelectionActive || g_bSaveInProgress) return 0;
         holdRestoredView = false;
         const float previousTarget = exiting ? resumeZoom : zoomTelescopeTarget;
-        float newZoomLevel = previousTarget;
-        if (wParam == 0) {
-            newZoomLevel *= 2;
-        } else if (wParam == 1) {
-            newZoomLevel = newZoomLevel > 2 ? newZoomLevel / 2 : newZoomLevel * .75f;
-        } else {
-            return 0;
-        }
-        newZoomLevel = (std::clamp)(newZoomLevel, 1.0f, static_cast<float>(ZOOM_LEVEL_MAX));
+        if (wParam != 0 && wParam != 1) return 0;
+        const float newZoomLevel = NextZoomLevel(previousTarget, wParam == 0);
         resumeZoom = previousTarget;
         exiting = newZoomLevel == 1.0f;
         zoomTelescopeTarget = newZoomLevel;
-        zoomTelescopeStep = newZoomLevel >= zoomLevel ? ZOOM_LEVEL_STEP_IN : ZOOM_LEVEL_STEP_OUT;
+        zoomTelescopeStep = ZoomAnimationStep(zoomLevel, newZoomLevel);
         prevZoomStepTickCount = 0;
         forceTransform = true;
         if (!g_AnimateLiveZoom || !dwmEnabled) zoomLevel = newZoomLevel;

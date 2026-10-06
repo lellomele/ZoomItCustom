@@ -111,3 +111,5 @@
 #define IDC_STARTUP_HINT                 4224
 
 #define IDC_LIVE_DRAW_HOTKEY             4230
+
+#define IDC_INITIAL_ZOOM_VALUE          4231

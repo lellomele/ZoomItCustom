@@ -146,13 +146,13 @@ INT_PTR CALLBACK TestOptionsProc(HWND dialog, UINT message, WPARAM wParam, LPARA
                 (g_AnimateZoom ? BST_CHECKED : BST_UNCHECKED);
         wchar_t title[128]{}, version[64]{}, copyright[256]{}, lastTab[32]{};
         GetWindowText(dialog,title,_countof(title));
-        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.6")==0;
+        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.1.7")==0;
         TCITEM item{};item.mask=TCIF_TEXT;item.pszText=lastTab;item.cchTextMax=_countof(lastTab);
         TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),ABOUT_PAGE,&item);
         optionsValid &= wcscmp(lastTab,L"About")==0;
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
-        optionsValid &= wcscmp(version,L"Version 1.1.6")==0 &&
+        optionsValid &= wcscmp(version,L"Version 1.1.7")==0 &&
                         wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr;
         optionsValid &= IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_REPOSITORY)) &&
                         IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_LICENSE));
@@ -203,7 +203,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
     const BOOLEAN savedZoomAnimation=g_AnimateZoom, savedLiveAnimation=g_AnimateLiveZoom;
     const DWORD savedSlider=g_SliderZoomLevel;
     const BOOL savedFullscreen=g_fullScreenWorkaround;
-    g_SliderZoomLevel=5;
+    g_SliderZoomLevel=11;
     const float target=g_ZoomLevels[g_SliderZoomLevel];
     auto mode=[] {return SendMessage(g_hWndMain,WM_TEST_QUERY_MODE,0,0);};
     auto level=[] {
@@ -424,9 +424,9 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         close();
         prepare(fullscreen);toggle();settle();
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,1,0);
-        require(level()>2 && level()<target,"Different-target reversal must start during animated factor reduction");
+        require(level()>3.75f && level()<target,"Different-target reversal must start during animated factor reduction");
         toggle();pump(25);toggle();++results.reverseEvents;
-        waitUntil([&] {return IsWindow(g_hWndLiveZoom) && level()==2;},
+        waitUntil([&] {return IsWindow(g_hWndLiveZoom) && level()==3.75f;},
                   "Exit reversal must restore the requested lower factor instead of the intermediate frame");
         nativeLevel();close();
         for(int delay:{0,7,30}) {
@@ -605,7 +605,7 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
     g_DrawToggleKey=(HOTKEYF_CONTROL<<8)|'3';g_BreakToggleKey=(HOTKEYF_CONTROL<<8)|'4';
     g_SnipToggleKey=(HOTKEYF_CONTROL<<8)|'5';
     g_ToggleMod=g_LiveZoomToggleMod=g_DrawToggleMod=g_BreakToggleMod=g_SnipToggleMod=MOD_CONTROL;
-    g_AnimateZoom=FALSE;g_AnimateLiveZoom=FALSE;g_SliderZoomLevel=5;
+    g_AnimateZoom=FALSE;g_AnimateLiveZoom=FALSE;g_SliderZoomLevel=11;
     g_BreakOnSecondary=FALSE;g_BreakShowBackgroundFile=FALSE;g_DrawPointer=FALSE;
     g_PenColor=COLOR_RED|0xff000000;g_RootPenWidth=5;g_PenWidth=5;
     const LONG_PTR hostBackground=GetClassLongPtrW(host,GCLP_HBRBACKGROUND);
@@ -1127,10 +1127,13 @@ void PrintModePolicyResults(const ModePolicyResults& result) {
         <<",\"pen_contact_cases\":"<<result.penContactCases<<"}\n";
 }
 
+#include "zoom_granularity.h"
+
 int main(int argc, char** argv) {
     const bool snipOnly = argc>1 && strcmp(argv[1],"--snip-only")==0;
     const bool animationOnly = argc>1 && strcmp(argv[1],"--live-animation-only")==0;
     const bool policyOnly = argc>1 && strcmp(argv[1],"--mode-policy-only")==0;
+    const bool zoomOnly = argc>1 && strcmp(argv[1],"--zoom-granularity-only")==0;
     std::wstring capturePath;
     if(argc>2) {capturePath=std::filesystem::absolute(argv[2]).wstring();aboutCapturePath=capturePath.c_str();}
     else {
@@ -1159,7 +1162,7 @@ int main(int argc, char** argv) {
         require(g_ToggleKey==((HOTKEYF_CONTROL<<8)|'1'),"Migrated zoom shortcut");
         g_ToggleKey='Z'; require(!MigrateHotkeys() && g_ToggleKey=='Z',"Later customized shortcuts must be preserved");
         require(DecodeZoomLevel(EncodeZoomLevel(1.25f))==1.25f,"Fractional zoom must survive messages");
-        g_SliderZoomLevel=0xffffffff; g_RootPenWidth=0xffffffff;
+        g_SliderZoomLevel=0xffffffff; g_InitialZoomPercent=0xffffffff; g_RootPenWidth=0xffffffff;
         g_BreakTimeout=0xffffffff; g_BreakTimerPosition=0xffffffff;
         ValidateSettings();
         require(g_SliderZoomLevel==3 && g_RootPenWidth==19 &&
@@ -1287,6 +1290,13 @@ int main(int argc, char** argv) {
         ShowWindow(host,SW_SHOW);
         ActivateTestHost(host);
         SetCursorPos(125,125);
+        if(zoomOnly) {
+            const auto zoom=RunZoomGranularityRegression(host);
+            DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();
+            SetCursorPos(oldCursor.x,oldCursor.y);
+            PrintZoomGranularityResults(zoom);
+            return 0;
+        }
         if(policyOnly) {
             const auto policy=RunModePolicyRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();

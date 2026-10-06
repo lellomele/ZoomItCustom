@@ -51,6 +51,8 @@ Lo Zoom statico blocca l'immagine ingrandita. LiveZoom la aggiorna in tempo real
 
 Ogni modalità ha la propria checkbox **Animate zoom in and zoom out**. In LiveZoom, attivandola, ingresso, uscita e variazioni di ingrandimento diventano graduali; disattivandola sono immediati. L'opzione LiveZoom parte disattivata e viene salvata indipendentemente da quella dello Zoom.
 
+La scheda **Zoom** permette di scegliere l’ingrandimento iniziale di Zoom e LiveZoom; il valore appare accanto al selettore. Da **1,25× a 4×**, i comandi procedono per **passi di 0,25×**. In Zoom usare rotella o Su/Giù; in LiveZoom Ctrl+Su / Ctrl+Giù. Sopra 4× restano i livelli 8×, 16× e 32×. Scendendo sotto 1,25× si torna a 1× e si esce da LiveZoom. L’ingrandimento iniziale già configurato viene conservato nell’aggiornamento.
+
 In LiveZoom, **Ctrl+Su / Ctrl+Giù** regolano l'ingrandimento. **Ctrl+3** avvia Draw su un'immagine bloccata; **Ctrl+Shift+3** avvia LiveDraw mantenendo la visualizzazione dal vivo. **Esc** termina il disegno e torna a LiveZoom. **Ctrl+2** esce da LiveZoom solo quando il disegno non è attivo.
 
 Le scorciatoie di modalità seguono queste regole, anche durante le animazioni dello zoom:

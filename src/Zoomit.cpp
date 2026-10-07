@@ -23,10 +23,12 @@
 #include "Startup.h"
 #include "LiveZoomWheel.h"
 #include "ZoomIndicator.h"
+#include "Whiteboard.h"
 #include <exception>
 
 
 HINSTANCE		g_hInstance;
+zoomit::whiteboard::Board g_Whiteboard;
 
 COLORREF	g_CustomColors[16];
 
@@ -35,6 +37,9 @@ COLORREF	g_CustomColors[16];
 #define BREAK_HOTKEY			2
 #define LIVE_HOTKEY				3
 #define LIVE_DRAW_HOTKEY		    4
+#define WHITEBOARD_HOTKEY             10
+constexpr UINT WM_USER_WHITEBOARD_CHANGED = WM_USER + 132;
+
 #define SNIP_HOTKEY			    8
 #define SNIP_SAVE_HOTKEY		    9
 constexpr LPARAM MENU_HOTKEY_REQUEST = 4;
@@ -46,7 +51,8 @@ constexpr LPARAM MENU_HOTKEY_REQUEST = 4;
 
 #define BREAK_PAGE	  3
 #define SNIP_PAGE	  4
-#define ABOUT_PAGE     5
+#define WHITEBOARD_PAGE 5
+#define ABOUT_PAGE     6
 
 OPTION_TABS g_OptionsTabs[] = {
     { _T("Zoom"), NULL },
@@ -56,6 +62,7 @@ OPTION_TABS g_OptionsTabs[] = {
 
     { _T("Break"), NULL },
     { _T("Snip"), NULL },
+    { _T("Whiteboard"), NULL },
     { _T("About"), NULL }
 };
 
@@ -242,7 +249,14 @@ BOOL DestroyLiveZoomWindow(HWND liveWindow) noexcept {
     return DestroyWindow(liveWindow);
 }
 
+zoomit::whiteboard::Options WhiteboardOptions() noexcept {
+    return {g_WhiteboardToggleKey,g_WhiteboardBackgroundKey,g_WhiteboardBlack,g_WhiteboardSpacing,g_WhiteboardOpacity};
+}
 void ValidateSettings() noexcept {
+    if (!zoomit::whiteboard::ValidOptions(WhiteboardOptions())) {
+        g_WhiteboardToggleKey=(HOTKEYF_CONTROL<<8)|'6';g_WhiteboardBackgroundKey='C';
+        g_WhiteboardBlack=0;g_WhiteboardSpacing=32;g_WhiteboardOpacity=16;
+    }
     constexpr DWORD legacyPercent[]{125, 150, 175, 200, 300, 400};
     if (!g_InitialZoomPercent) {
         // Missing new preference: map the old six-position slider by value.
@@ -1394,6 +1408,7 @@ void UnregisterAllHotkeys( HWND hWnd )
     UnregisterHotKey( hWnd, BREAK_HOTKEY);
     UnregisterHotKey( hWnd, SNIP_HOTKEY );
     UnregisterHotKey( hWnd, SNIP_SAVE_HOTKEY);
+    UnregisterHotKey(hWnd,WHITEBOARD_HOTKEY);
 
 
 }
@@ -1405,6 +1420,7 @@ void UnregisterAllHotkeys( HWND hWnd )
 //----------------------------------------------------------------------------
 void RegisterAllHotkeys(HWND hWnd)
 {
+    if(g_WhiteboardToggleKey)RegisterHotKey(hWnd,WHITEBOARD_HOTKEY,GetKeyMod(g_WhiteboardToggleKey),g_WhiteboardToggleKey&0xff);
     if (g_ToggleKey) 			RegisterHotKey(hWnd, ZOOM_HOTKEY, g_ToggleMod, g_ToggleKey & 0xFF);
     if (g_LiveZoomToggleKey) {
         RegisterHotKey(hWnd, LIVE_HOTKEY, g_LiveZoomToggleMod, g_LiveZoomToggleKey & 0xFF);
@@ -1561,6 +1577,18 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
         if( g_BreakToggleKey )	SendMessage( GetDlgItem( g_OptionsTabs[BREAK_PAGE].hPage, IDC_BREAK_HOTKEY), HKM_SETHOTKEY, g_BreakToggleKey, 0 );
         
         if( g_SnipToggleKey) 	SendMessage( GetDlgItem( g_OptionsTabs[SNIP_PAGE].hPage, IDC_SNIP_HOTKEY), HKM_SETHOTKEY, g_SnipToggleKey, 0 );
+        const HWND boardPage=g_OptionsTabs[WHITEBOARD_PAGE].hPage;
+        SendDlgItemMessage(boardPage,IDC_WHITEBOARD_HOTKEY,HKM_SETRULES,HKCOMB_NONE,MAKELPARAM(HOTKEYF_CONTROL,0));
+        SendDlgItemMessage(boardPage,IDC_WHITEBOARD_HOTKEY,HKM_SETHOTKEY,g_WhiteboardToggleKey,0);
+        SendDlgItemMessage(boardPage,IDC_WHITEBOARD_BACKGROUND_KEY,HKM_SETHOTKEY,g_WhiteboardBackgroundKey,0);
+        CheckRadioButton(boardPage,IDC_WHITEBOARD_WHITE,IDC_WHITEBOARD_BLACK,g_WhiteboardBlack?IDC_WHITEBOARD_BLACK:IDC_WHITEBOARD_WHITE);
+        SetDlgItemInt(boardPage,IDC_WHITEBOARD_SPACING,g_WhiteboardSpacing,FALSE);
+        SetDlgItemInt(boardPage,IDC_WHITEBOARD_OPACITY,g_WhiteboardOpacity,FALSE);
+        SendDlgItemMessage(boardPage,IDC_WHITEBOARD_SPIN,UDM_SETRANGE32,8,256);
+        UDACCEL boardSpacingAccel{0,4};SendDlgItemMessage(boardPage,IDC_WHITEBOARD_SPIN,UDM_SETACCEL,1,reinterpret_cast<LPARAM>(&boardSpacingAccel));
+        SendDlgItemMessage(boardPage,IDC_WHITEBOARD_OPACITY_SPIN,UDM_SETRANGE32,1,60);
+        SendDlgItemMessage(boardPage,IDC_WHITEBOARD_SPACING,EM_LIMITTEXT,3,0);
+        SendDlgItemMessage(boardPage,IDC_WHITEBOARD_OPACITY,EM_LIMITTEXT,2,0);
         CheckDlgButton( hDlg, IDC_SHOW_TRAY_ICON, 
             g_ShowTrayIcon ? BST_CHECKED: BST_UNCHECKED );
         zoomit::startup::InitializeControls(hDlg, recovery::client.Supervised());
@@ -1649,6 +1677,17 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
         case IDOK:
         {
 
+            const HWND boardPage=g_OptionsTabs[WHITEBOARD_PAGE].hPage;
+            BOOL boardSpacingOk{},boardOpacityOk{};
+            const zoomit::whiteboard::Options newBoard{
+                static_cast<DWORD>(SendDlgItemMessage(boardPage,IDC_WHITEBOARD_HOTKEY,HKM_GETHOTKEY,0,0)),
+                static_cast<DWORD>(SendDlgItemMessage(boardPage,IDC_WHITEBOARD_BACKGROUND_KEY,HKM_GETHOTKEY,0,0)),
+                IsDlgButtonChecked(boardPage,IDC_WHITEBOARD_BLACK)==BST_CHECKED,
+                GetDlgItemInt(boardPage,IDC_WHITEBOARD_SPACING,&boardSpacingOk,FALSE),
+                GetDlgItemInt(boardPage,IDC_WHITEBOARD_OPACITY,&boardOpacityOk,FALSE)};
+            if(!boardSpacingOk || !boardOpacityOk || !zoomit::whiteboard::ValidOptions(newBoard)) {
+                MessageBoxW(hDlg,L"Choose valid whiteboard shortcuts, a square size from 8 to 256 in steps of 4, and grid opacity from 1 to 60%.",APPNAME,MB_ICONERROR);break;
+            }
             const BOOLEAN newShowTrayIcon = IsDlgButtonChecked(hDlg, IDC_SHOW_TRAY_ICON) == BST_CHECKED;
             const BOOLEAN newAnimateZoom = IsDlgButtonChecked(g_OptionsTabs[ZOOM_PAGE].hPage, IDC_ANIMATE_ZOOM) == BST_CHECKED;
             const BOOLEAN newAnimateLiveZoom =
@@ -1668,6 +1707,17 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
             newBreakToggleMod = GetKeyMod( newBreakToggleKey );
 
             newSnipToggleMod = GetKeyMod( newSnipToggleKey );
+            const DWORD otherBoardKeys[]{newToggleKey,newLiveZoomToggleKey,newDrawToggleKey,
+                newBreakToggleKey,newSnipToggleKey,newDrawToggleKey?newDrawToggleKey|(HOTKEYF_SHIFT<<8):0,
+                newSnipToggleKey?newSnipToggleKey^(HOTKEYF_SHIFT<<8):0,newBoard.toggleKey};
+            bool boardKeyCollision=false;
+            for(size_t i=0;i<_countof(otherBoardKeys);++i) {
+                const DWORD key=otherBoardKeys[i];
+                if(key && (key==newBoard.backgroundKey || (i+1<_countof(otherBoardKeys) && key==newBoard.toggleKey)))boardKeyCollision=true;
+            }
+            if(boardKeyCollision) {
+                MessageBoxW(hDlg,L"Choose distinct mode shortcuts; the whiteboard background shortcut must also differ from them.",APPNAME,MB_ICONERROR);break;
+            }
             if (newDrawToggleKey && (newDrawToggleMod & MOD_SHIFT)) {
                 MessageBoxW(hDlg, L"Choose a Draw shortcut without Shift. Shift is added automatically for LiveDraw.",
                             APPNAME, MB_ICONERROR);
@@ -1725,13 +1775,18 @@ INT_PTR CALLBACK OptionsProc( HWND hDlg, UINT message,
                 break;
 
             }			
-             else {
-        
+             else if(!RegisterHotKey(GetParent(hDlg),WHITEBOARD_HOTKEY,GetKeyMod(newBoard.toggleKey),newBoard.toggleKey&0xff)) {
+                MessageBoxW(hDlg,L"The whiteboard shortcut is already in use. Choose another shortcut.",APPNAME,MB_ICONERROR);
+                UnregisterAllHotkeys(GetParent(hDlg));break;
+            } else {
                 g_BreakTimeout = newTimeout;
                 if (!ConfigureAutostart(hDlg)) {
                     UnregisterAllHotkeys(GetParent(hDlg));
                     break;
                 }
+                g_WhiteboardToggleKey=newBoard.toggleKey;g_WhiteboardBackgroundKey=newBoard.backgroundKey;
+                g_WhiteboardBlack=newBoard.black;g_WhiteboardSpacing=newBoard.spacing;g_WhiteboardOpacity=newBoard.opacity;
+                g_Whiteboard.UpdateHotkeys(newBoard.toggleKey,newBoard.backgroundKey);
                 g_ToggleKey = newToggleKey;
                 g_LiveZoomToggleKey = newLiveZoomToggleKey;
                 g_LiveZoomToggleMod = newLiveZoomToggleMod;
@@ -2628,6 +2683,7 @@ LRESULT APIENTRY MainWndProcImpl(
         SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
         SetLayeredWindowAttributes(hWnd, 0, 255, LWA_ALPHA);
         ShowWindow(hWnd, SW_HIDE); RestoreSystemPointer();
+        g_Whiteboard.Close();
     };
     const auto publish = [&](bool copyCanvas) noexcept {
         if (g_SelectionActive || g_bSaveInProgress || g_Tracing) return;
@@ -2654,6 +2710,12 @@ LRESULT APIENTRY MainWndProcImpl(
                 if (!g_Zoomed) { state.zoom = viewport.factor; state.view = viewport.pointer; state.monitor = viewport.monitor; }
             }
         }
+        if(g_Whiteboard.Active()) {
+            const auto& board=g_Whiteboard.SessionOptions();
+            state.boardBlack=board.black;state.boardSpacing=board.spacing;state.boardOpacity=board.opacity;
+            state.mode=g_Zoomed ? recovery::Mode::WhiteboardDraw:recovery::Mode::Whiteboard;
+            if(!g_Zoomed){state.monitor=g_Whiteboard.Monitor();state.zoom=1;state.view={};state.pointer={};}
+        }
         const int cursorSize = g_PenWidth + 2 + CURSOR_ARM_LENGTH * 2;
         RECT pointerRect{prevPt.x - static_cast<LONG>((g_PenWidth + 2) / 2) - 4,
                          prevPt.y - static_cast<LONG>((g_PenWidth + 2) / 2) - 4, 0, 0};
@@ -2666,6 +2728,11 @@ LRESULT APIENTRY MainWndProcImpl(
     const auto userModeAllowed = [&](WPARAM command) noexcept {
         if (hWndOptions || g_SelectionActive || g_bSaveInProgress || captureOperationDepth) return false;
         const bool snip = command == SNIP_HOTKEY || command == SNIP_SAVE_HOTKEY;
+        if(g_Whiteboard.Active()) {
+            if(command==WHITEBOARD_HOTKEY)return true;
+            if(command==DRAW_HOTKEY)return !g_Zoomed && !g_TimerActive;
+            return snip && !g_Tracing && !g_PenDown;
+        }
         const bool layered = g_Zoomed && (GetWindowLongPtr(hWnd, GWL_EXSTYLE) & WS_EX_LAYERED);
         const bool drawing = g_Drawing || drawingSuspended || layered;
         const bool live = g_ZoomOnLiveZoom || IsWindowVisible(g_hWndLiveZoom);
@@ -2673,7 +2740,7 @@ LRESULT APIENTRY MainWndProcImpl(
         if (g_TimerActive) return command == BREAK_HOTKEY;
         if (g_Zoomed) return command == ZOOM_HOTKEY || snip;
         if (live) return command == LIVE_HOTKEY || command == DRAW_HOTKEY || command == LIVE_DRAW_HOTKEY || snip;
-        return command == ZOOM_HOTKEY || command == LIVE_HOTKEY || command == DRAW_HOTKEY ||
+        return command == WHITEBOARD_HOTKEY || command == ZOOM_HOTKEY || command == LIVE_HOTKEY || command == DRAW_HOTKEY ||
                command == LIVE_DRAW_HOTKEY || command == BREAK_HOTKEY || snip;
     };
     const auto abandonFailedDrawingEntry = [&]() noexcept {
@@ -2710,6 +2777,7 @@ LRESULT APIENTRY MainWndProcImpl(
     bool canvasChangedThisDispatch = false;
     const auto checkpointAtReturn = zoomit::OnExit([&] {
         --dispatchDepth;
+        if(!dispatchDepth)g_Whiteboard.SetInputBlocked(g_Zoomed || g_TimerActive || hWndOptions || g_SelectionActive || g_bSaveInProgress || captureOperationDepth);
         if (skipCheckpoint || dispatchDepth || std::uncaught_exceptions() != exceptions || message == WM_CREATE ||
             message == WM_DESTROY || message == WM_NCDESTROY || recovery::client.Recovering()) return;
         canvasDirty |= canvasChangedThisDispatch;
@@ -2732,6 +2800,11 @@ LRESULT APIENTRY MainWndProcImpl(
     });
 
     switch (message) {
+    case WM_USER_WHITEBOARD_CHANGED:
+        if(g_Whiteboard.PaintFailed()) {
+            resetToIdle();recovery::client.Serious(L"Disegno griglia lavagna",ERROR_GEN_FAILURE);
+        }
+        publish(false);return 0;
     case WM_USER_CAN_SHOW_ZOOM_INDICATOR:
         return !g_TimerActive && !g_Drawing && !drawingSuspended && !hWndOptions && !g_SelectionActive &&
             !g_bSaveInProgress && !captureOperationDepth && !(g_Zoomed && (GetWindowLongPtr(hWnd,GWL_EXSTYLE)&WS_EX_LAYERED));
@@ -2832,6 +2905,9 @@ LRESULT APIENTRY MainWndProcImpl(
 
             }
             
+            if(!RegisterHotKey(hWnd,WHITEBOARD_HOTKEY,GetKeyMod(g_WhiteboardToggleKey),g_WhiteboardToggleKey&0xff)) {
+                MessageBoxW(hWnd,L"The whiteboard shortcut is already in use. Choose another shortcut.",APPNAME,MB_ICONERROR);showOptions=TRUE;
+            }
             if( showOptions ) {
 
                 SendMessage( hWnd, WM_COMMAND, IDC_OPTIONS, 0 );
@@ -2857,6 +2933,13 @@ LRESULT APIENTRY MainWndProcImpl(
     case WM_DPICHANGED:
     case WM_POWERBROADCAST:
         if (message == WM_POWERBROADCAST && wParam != PBT_APMRESUMEAUTOMATIC && wParam != PBT_APMRESUMESUSPEND) break;
+        if(g_Whiteboard.Active()) {
+            const RECT boardMonitor=g_Whiteboard.Monitor();MONITORINFO boardCurrent{};
+            if(!UpdateMonitorInfo(POINT{boardMonitor.left,boardMonitor.top},&boardCurrent) ||
+                !EqualRect(&boardCurrent.rcMonitor,&boardMonitor) || message==WM_POWERBROADCAST) {
+                resetToIdle();return 0;
+            }
+        }
         if (g_Zoomed || g_TimerActive || IsWindowVisible(g_hWndLiveZoom)) {
             RECT activeMonitor = monInfo.rcMonitor;
             LiveViewport viewport{};
@@ -2913,18 +2996,23 @@ LRESULT APIENTRY MainWndProcImpl(
                     if (restored) restored = SendMessage(g_hWndLiveZoom, WM_USER_SET_ZOOM, EncodeZoomLevel(saved.liveZoom),
                         reinterpret_cast<LPARAM>(&saved.source)) != 0;
                 }
+                if(restored && (saved.mode==recovery::Mode::Whiteboard || saved.mode==recovery::Mode::WhiteboardDraw)) {
+                    auto board=WhiteboardOptions();board.black=saved.boardBlack;board.spacing=saved.boardSpacing;board.opacity=saved.boardOpacity;
+                    restored=g_Whiteboard.Open(g_hInstance,hWnd,WM_USER_WHITEBOARD_CHANGED,saved.monitor,board)==ERROR_SUCCESS;
+                }
                 if (restored && saved.mode == recovery::Mode::Break) {
                     SendMessage(hWnd, WM_COMMAND, IDC_BREAK, 0);
                     restored = g_TimerActive != FALSE;
                     if (restored) breakTimeout = static_cast<int>((static_cast<LONGLONG>(saved.breakDeadline) -
                         static_cast<LONGLONG>(GetTickCount64())) / 1000);
-                } else if (restored && saved.mode != recovery::Mode::LiveZoom) {
+                } else if (restored && saved.mode != recovery::Mode::LiveZoom && saved.mode!=recovery::Mode::Whiteboard) {
                     SendMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY,
                         saved.mode == recovery::Mode::FrozenLiveDraw ? SHALLOW_ZOOM : LIVE_DRAW_ZOOM);
                     restored = g_Zoomed && width == static_cast<int>(saved.canvasWidth) &&
                         height == static_cast<int>(saved.canvasHeight) && recovery::client.RestoreCanvas(saved, hdcScreenCompat);
                     if (restored) {
-                        if (!BitBlt(hdcScreenSaveCompat, 0, 0, width, height, hdcScreenCompat, 0, 0, SRCCOPY) || !GdiFlush()) restored = false;
+                        if(saved.mode!=recovery::Mode::WhiteboardDraw &&
+                            (!BitBlt(hdcScreenSaveCompat,0,0,width,height,hdcScreenCompat,0,0,SRCCOPY) || !GdiFlush()))restored=false;
                         canvasDirty = true;
                         cursorPos = saved.view; prevPt = saved.pointer;
                         zoomLevel = zoomTelescopeTarget = saved.zoom; zoomTelescopeStep = 0;
@@ -3033,7 +3121,22 @@ LRESULT APIENTRY MainWndProcImpl(
             //
             Sleep(250);
         }
+        if(g_Whiteboard.Active() && (wParam==DRAW_HOTKEY || wParam==SNIP_HOTKEY || wParam==SNIP_SAVE_HOTKEY)) {
+            g_Whiteboard.SetInputBlocked(true);UpdateWindow(g_Whiteboard.Window());
+            if(g_Whiteboard.PaintFailed()){resetToIdle();recovery::client.Serious(L"Preparazione lavagna Draw",ERROR_GEN_FAILURE);return TRUE;}
+        }
         switch( wParam ) {
+        case WHITEBOARD_HOTKEY: {
+            if(g_Whiteboard.Active()){resetToIdle();break;}
+            if(g_Zoomed || g_TimerActive || IsWindowVisible(g_hWndLiveZoom) || hWndOptions)break;
+            POINT point{};MONITORINFO monitor{};
+            if(!zoomit::runtime::ReadCursor(&point) || !UpdateMonitorInfo(point,&monitor)) {
+                recovery::client.Serious(L"Monitor lavagna",ERROR_GEN_FAILURE);break;
+            }
+            const DWORD error=g_Whiteboard.Open(g_hInstance,hWnd,WM_USER_WHITEBOARD_CHANGED,monitor.rcMonitor,WhiteboardOptions());
+            if(error){g_Whiteboard.Close();recovery::client.Serious(L"Apertura lavagna",error);}
+            break;
+        }
         case LIVE_DRAW_HOTKEY:
         {
             OutputDebug(L"LIVE_DRAW_HOTKEY\n");
@@ -4598,6 +4701,10 @@ LRESULT APIENTRY MainWndProcImpl(
             }
         }
         
+        if(!RegisterHotKey(hWnd,WHITEBOARD_HOTKEY,GetKeyMod(g_WhiteboardToggleKey),g_WhiteboardToggleKey&0xff)) {
+            MessageBoxW(hWnd,L"The whiteboard shortcut is already in use. Choose another shortcut.",APPNAME,MB_ICONERROR);showOptions=TRUE;
+        }
+        g_Whiteboard.UpdateHotkeys(g_WhiteboardToggleKey,g_WhiteboardBackgroundKey);
         if (showOptions)
         {
             // To open the PowerToys settings in the ZoomIt page.
@@ -5248,6 +5355,7 @@ LRESULT APIENTRY MainWndProcImpl(
         return TRUE;
 
     case WM_DESTROY:
+        g_Whiteboard.Close(false);
         g_ZoomIndicator.Destroy();
         g_LiveZoomWheel.Shutdown();
         endSuspension();

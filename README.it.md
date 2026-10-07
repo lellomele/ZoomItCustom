@@ -46,6 +46,7 @@ Le scorciatoie si possono modificare nelle opzioni. LiveDraw usa sempre la scorc
 | Ctrl+3 | Disegno |
 | Ctrl+4 | Pausa con timer |
 | Ctrl+5 | Copia un ritaglio |
+| Ctrl+6 | Lavagna |
 | Ctrl+Shift+3 | LiveDraw (scorciatoia Draw + Shift) |
 | Ctrl+Shift+5 | Salva un ritaglio PNG |
 
@@ -70,6 +71,18 @@ Le scorciatoie di modalità seguono queste regole, anche durante le animazioni d
 In Draw e LiveDraw, **Ctrl+Z** annulla ed **E** cancella le annotazioni. Il primo **clic destro** sospende il disegno e mostra un piccolo cerchio con bordo del colore attivo e interno scuro. Spostare il mouse non aggiunge tratti. Il **clic sinistro** riprende il disegno; un secondo **clic destro** esce. Anche **Esc** termina il disegno. LiveDraw non supporta evidenziatore e sfocatura. Nel timer, Su/Giù e rotella regolano i minuti; Sinistra/Destra regolano dieci secondi ed **Esc** termina la pausa.
 
 Snip funziona sul desktop, nello Zoom statico, in LiveZoom e in Draw, anche con disegno sospeso. Dopo cattura o annullamento conserva annotazioni, ingrandimento e stato del disegno. Con LiveZoom blocca temporaneamente l'immagine e poi ripristina la visualizzazione dal vivo. Snip è ignorato durante un tratto in corso, nel timer o con LiveDraw su LiveZoom; resta disponibile con LiveDraw sul desktop. **Ctrl+Shift+5** salva un PNG seguendo le stesse regole. Nel salvataggio, scegliere **Zoomed PNG** per la dimensione visualizzata oppure **Actual size PNG** per eliminare l'ingrandimento.
+
+## Lavagna
+
+**Ctrl+6** apre o chiude una lavagna a schermo intero sul monitor in cui si trova il puntatore. La scheda **Whiteboard**, prima di About, configura hotkey, sfondo iniziale bianco/nero, tasto locale per alternare lo sfondo (predefinito **C**), dimensione dei quadretti e intensità delle righe.
+
+Fuori da Draw, **C** alterna lo sfondo; **Ctrl+rotellina** e **Ctrl+freccia su / giù** regolano i quadretti a passi di quattro. La dimensione va da 8 a 256 e si adatta al ridimensionamento dello schermo di Windows. L'intensità delle righe va dall'1 al 60%.
+
+La hotkey Draw configurata (**Ctrl+3** predefinita) attiva i consueti strumenti di disegno. Le impostazioni della lavagna restano bloccate mentre Draw è attivo. **Esc termina Draw e rimuove le annotazioni**, tornando alla lavagna modificabile. Ripremere Draw per iniziare un nuovo disegno. Salvare o copiare le annotazioni prima di uscire da Draw se si desidera conservarle.
+
+**Esc sulla lavagna la lascia aperta** e mostra brevemente la hotkey configurata per uscire. Ripremere quella hotkey per chiuderla, anche durante Draw. Le hotkey Zoom, LiveZoom, LiveDraw e Break sono ignorate mentre la lavagna è aperta; Snip rimane disponibile nei casi idonei. Il messaggio di uscita viene nascosto prima di disegnare o acquisire immagini.
+
+Il Supervisor opzionale ripristina anche sfondo e quadretti dopo un crash. Il disegno sulla lavagna segue le regole esistenti di recupero in sospensione. Tenere insieme app e Supervisor dello stesso pacchetto.
 
 ## In caso di problemi
 

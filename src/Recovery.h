@@ -2,14 +2,15 @@
 #include <windows.h>
 #include <cstdint>
 namespace recovery {
-constexpr DWORD ProtocolVersion=2, ProtocolMagic=0x5a495452;
+constexpr DWORD ProtocolVersion=3, ProtocolMagic=0x5a495452;
 constexpr size_t CanvasCapacity=64ull*1024*1024;
 constexpr UINT ResetMessage=WM_APP+42, RestoreMessage=WM_APP+43;
-enum class Mode:DWORD { Idle,Zoom,LiveZoom,Draw,LiveDraw,FrozenLiveDraw,Break };
+enum class Mode:DWORD { Idle,Zoom,LiveZoom,Draw,LiveDraw,FrozenLiveDraw,Break,Whiteboard,WhiteboardDraw };
 struct State {
     DWORD sequence{}; Mode mode{}; RECT monitor{},source{}; POINT view{},pointer{};
     float zoom{1},liveZoom{1};
     DWORD color{},penWidth{2},rootPenWidth{2},pointerArrow{},liveActive{};
+    DWORD boardBlack{},boardSpacing{},boardOpacity{};
     ULONGLONG breakDeadline{};
     LONG canvasSlot{-1}; DWORD canvasSequence{},canvasWidth{},canvasHeight{},checksum{};
 };

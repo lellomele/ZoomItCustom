@@ -238,7 +238,7 @@ int main(int argc,char** argv){
         auto resume=Run(binaries,root,L"resume");
         Require(resume.exit==0&&resume.reports==0&&resume.dumps==0&&resume.output=="boot\nresume-ok\n","Resume safely closes obsolete surfaces without error log");
         double maximum=0;
-        for(const wchar_t* scenario:{L"zoom",L"draw",L"live",L"break",L"layered",L"frozen",L"forced",L"corrupt-frame",L"corrupt-metadata"}){
+        for(const wchar_t* scenario:{L"zoom",L"draw",L"live",L"break",L"layered",L"frozen",L"forced",L"corrupt-frame",L"corrupt-metadata",L"whiteboard",L"whiteboard-draw"}){
             const auto result=Run(binaries,root,scenario);
             Require(result.exit==0&&result.output.find("recovered-ok")!=std::string::npos&&
                 result.output.find("recovered-failed")==std::string::npos&&result.output.find("corruption-failed")==std::string::npos,"Restore implemented modes after process crash");
@@ -268,7 +268,7 @@ int main(int argc,char** argv){
         Require(loop.exit==1&&loop.output=="boot\ncrash\nboot\ncrash\nboot\ncrash\n"&&loop.reports==3,"Crash loop stops after two retries");
         auto standalone=Run(binaries,root,L"standalone",false);
         Require(standalone.exit!=0&&standalone.reports==1&&standalone.output=="boot\ncrash\n","Standalone crash logs without restarting");
-        std::cout<<"{\"recovery_passed\":true,\"native_cases\":21,\"maximum_restart_case_ms\":"<<maximum
+        std::cout<<"{\"recovery_passed\":true,\"native_cases\":23,\"maximum_restart_case_ms\":"<<maximum
                  <<",\"checkpoint_cycles\":118,\"partial_failure_cases\":"<<failuresTested
                  <<",\"metadata_updates\":10101,\"checkpoint_1080p_ms\":"<<fullHdMs
                  <<",\"checkpoint_4k_ms\":"<<ultraHdMs<<",\"metadata_us\":"<<metadataMs*1000

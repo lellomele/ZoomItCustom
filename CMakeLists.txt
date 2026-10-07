@@ -99,3 +99,8 @@ if(BUILD_TESTING)
   add_test(NAME ZoomItNativeStationaryCursorTests COMMAND ZoomItRegression --stationary-native-cursor-only)
   set_tests_properties(ZoomItNativeStationaryCursorTests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS "native;pointer;logical-observation")
 endif()
+
+if(BUILD_TESTING)
+  add_test(NAME ZoomItWhiteboardTests COMMAND ZoomItRegression --whiteboard-only)
+  set_tests_properties(ZoomItWhiteboardTests PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS "native;whiteboard")
+endif()

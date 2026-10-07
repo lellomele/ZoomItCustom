@@ -1,3 +1,5 @@
+#include "../src/Whiteboard.h"
+extern zoomit::whiteboard::Board g_Whiteboard;
 #include <windows.h>
 #include <strsafe.h>
 #include <bit>
@@ -56,6 +58,14 @@ void RunRecoveryScenario(HWND window){
         const LRESULT mode=SendMessage(window,QueryMode,0,0);
         bool ok=true;
         if(safe)ok=mode==0&&!IsWindowVisible(g_hWndLiveZoom);
+        else if(wcscmp(scenario,L"whiteboard")==0 || wcscmp(scenario,L"whiteboard-draw")==0) {
+            ok=g_Whiteboard.Active() && g_Whiteboard.SessionOptions().black==1 &&
+                g_Whiteboard.SessionOptions().spacing==36 && g_Whiteboard.SessionOptions().opacity==16;
+            if(wcscmp(scenario,L"whiteboard-draw")==0) {
+                HDC canvas=reinterpret_cast<HDC>(SendMessage(window,QueryCanvas,0,0));
+                ok=ok&&(mode&16)!=0&&canvas&&GetPixel(canvas,32,48)==RGB(21,91,201);
+            }else ok=ok&&mode==0;
+        }
         else if(wcscmp(scenario,L"live")==0){
             auto level=reinterpret_cast<const float*>(SendMessage(g_hWndLiveZoom,WM_USER+102,0,0));
             ok=IsWindowVisible(g_hWndLiveZoom)&&level&&*level==2.5f;
@@ -72,6 +82,19 @@ void RunRecoveryScenario(HWND window){
         PostMessage(window,WM_COMMAND,IDCANCEL,0);return;
     }
     g_AnimateZoom=FALSE;g_RootPenWidth=5;g_PenWidth=5;g_PenColor=0xFF0000FF;
+    if(wcscmp(scenario,L"whiteboard")==0 || wcscmp(scenario,L"whiteboard-draw")==0) {
+        SendMessage(window,WM_HOTKEY,10,0);
+        if(!g_Whiteboard.Active()){Record(L"whiteboard-open-failed\n");PostMessage(window,WM_COMMAND,IDCANCEL,0);return;}
+        SendMessage(g_Whiteboard.Window(),WM_KEYDOWN,'C',0);
+        SendMessage(g_Whiteboard.Window(),WM_MOUSEWHEEL,MAKEWPARAM(MK_CONTROL,WHEEL_DELTA),0);
+        if(wcscmp(scenario,L"whiteboard-draw")==0) {
+            SendMessage(window,WM_HOTKEY,1,0);
+            HDC canvas=reinterpret_cast<HDC>(SendMessage(window,QueryCanvas,0,0));
+            if(canvas)SetPixel(canvas,32,48,RGB(21,91,201));
+            SendMessage(window,WM_APP+24,0,0);
+        }
+        Record(L"crash\n");CrashNow();return;
+    }
     if(wcscmp(scenario,L"live")==0||wcscmp(scenario,L"layered")==0||wcscmp(scenario,L"frozen")==0){
         SendMessage(window,WM_HOTKEY,3,0);
         SendMessage(g_hWndLiveZoom,WM_USER+104,std::bit_cast<DWORD>(2.5f),0);

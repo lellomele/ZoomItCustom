@@ -118,6 +118,7 @@ bool aboutCaptured=false;
 const wchar_t* aboutCapturePath=nullptr;
 bool captureLiveOptions=false;
 bool captureDrawOptions=false;
+bool captureWhiteboardOptions=false;
 bool verifyAnimationCancel=false;
 bool saveAnimationOptions=false;
 bool saveLiveAnimation=false;
@@ -126,7 +127,7 @@ INT_PTR TestOptionsProcImpl(HWND dialog, UINT message, WPARAM wParam, LPARAM lPa
     if (message == WM_TIMER && wParam == 97) {
         KillTimer(dialog, 97);
         HWND tabs=GetDlgItem(dialog,IDC_TAB);
-        const int capturedPage=captureDrawOptions ? DRAW_PAGE :
+        const int capturedPage=captureWhiteboardOptions ? WHITEBOARD_PAGE : captureDrawOptions ? DRAW_PAGE :
             (captureLiveOptions || verifyAnimationCancel || saveAnimationOptions) ? LIVE_PAGE : ABOUT_PAGE;
         TabCtrl_SetCurSel(tabs,capturedPage);
         NMHDR notification{tabs,IDC_TAB,TCN_SELCHANGE};
@@ -165,7 +166,7 @@ INT_PTR TestOptionsProcImpl(HWND dialog, UINT message, WPARAM wParam, LPARAM lPa
     }
     auto result = OptionsProc(dialog, message, wParam, lParam);
     if (message == WM_INITDIALOG) {
-        optionsValid &= TabCtrl_GetItemCount(GetDlgItem(dialog, IDC_TAB)) == 6;
+        optionsValid &= TabCtrl_GetItemCount(GetDlgItem(dialog, IDC_TAB)) == 7;
         for (auto& page : g_OptionsTabs) optionsValid &= IsWindow(page.hPage) != FALSE;
         wchar_t animationLabel[96]{};
         GetDlgItemTextW(g_OptionsTabs[LIVE_PAGE].hPage,IDC_ANIMATE_LIVE_ZOOM,
@@ -1376,11 +1377,13 @@ void PrintModePolicyResults(const ModePolicyResults& result) {
 #include "selection.h"
 #include "multimonitor.h"
 #include "native_stationary_cursor.h"
+#include "whiteboard.h"
 
 int main(int argc, char** argv) {
     // The child serves only a normal native host, before app/registry initialization.
     if(argc>2 && strcmp(argv[1],"--stationary-cursor-host")==0)return RunNativeCursorHostChild(argv[2]);
     const bool stationaryNativeOnly=argc>1 && strcmp(argv[1],"--stationary-native-cursor-only")==0;
+    const bool whiteboardOnly = argc>1 && strcmp(argv[1],"--whiteboard-only")==0;
     const bool captureOnly = argc>1 && strcmp(argv[1],"--capture-only")==0;
     const bool effectsOnly = argc>1 && strcmp(argv[1],"--drawing-effects-only")==0;
     const bool selectionOnly = argc>1 && strcmp(argv[1],"--selection-only")==0;
@@ -1395,7 +1398,9 @@ int main(int argc, char** argv) {
     if(argc>2) {capturePath=std::filesystem::absolute(argv[2]).wstring();aboutCapturePath=capturePath.c_str();}
     else {
         wchar_t image[MAX_PATH]{};
-        if(GetEnvironmentVariableW(L"ZOOMIT_TEST_LIVE_OPTIONS_CAPTURE",image,MAX_PATH)) {
+        if(GetEnvironmentVariableW(L"ZOOMIT_TEST_WHITEBOARD_CAPTURE",image,MAX_PATH)) {
+            captureWhiteboardOptions=true;capturePath=std::filesystem::absolute(image).wstring();aboutCapturePath=capturePath.c_str();
+        } else if(GetEnvironmentVariableW(L"ZOOMIT_TEST_LIVE_OPTIONS_CAPTURE",image,MAX_PATH)) {
             captureLiveOptions=true;
             capturePath=std::filesystem::absolute(image).wstring();aboutCapturePath=capturePath.c_str();
         } else if(GetEnvironmentVariableW(L"ZOOMIT_TEST_DRAW_OPTIONS_CAPTURE",image,MAX_PATH)) {
@@ -1567,6 +1572,11 @@ int main(int argc, char** argv) {
         ShowWindow(host,SW_SHOW);
         ActivateTestHost(host);
         SetCursorPos(125,125);
+        if(whiteboardOnly) {
+            const auto result=RunWhiteboardRegression(host);
+            DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();SetCursorPos(oldCursor.x,oldCursor.y);
+            isolatedRegistry->VerifyUntouched();PrintWhiteboardResults(result);return 0;
+        }
         if(selectionOnly) {
             const auto result=RunSelectionRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();SetCursorPos(oldCursor.x,oldCursor.y);
@@ -1821,6 +1831,12 @@ int main(int argc, char** argv) {
             const COLORREF beforeBetween=GetPixel(currentCanvas(),between.x,between.y);
             if(variant==4) {
                 SetForegroundWindow(g_hWndMain);
+                const ULONGLONG nativeFocusDeadline=GetTickCount64()+2500;
+                while(GetForegroundWindow()!=g_hWndMain && GetTickCount64()<nativeFocusDeadline)pump(5);
+                if(GetForegroundWindow()!=g_hWndMain) {
+                    DWORD owner{};GetWindowThreadProcessId(GetForegroundWindow(),&owner);
+                    std::cerr<<"Native LiveDraw focus: expected="<<g_hWndMain<<" actual="<<GetForegroundWindow()<<" foreground_pid="<<owner<<"\n";
+                }
                 require(GetForegroundWindow()==g_hWndMain,"LiveDraw must own the foreground before native click tests");
                 INPUT clickInput{};clickInput.type=INPUT_MOUSE;clickInput.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
                 bool nativeButtonHeld=false;
@@ -2049,7 +2065,7 @@ int main(int argc, char** argv) {
             SendMessage(g_hWndMain,WM_COMMAND,IDC_BREAK,0); pump(10);
             SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,0); pump(10);
         }
-        require(optionsValid,"Options must have six pages with About last, correct title/version and no recording or typing pages");
+        require(optionsValid,"Options must have seven pages with Whiteboard before About, correct title/version and no recording or typing pages");
         const auto gdiAfter=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
         const auto userAfter=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);
         const auto memoryAfter=privateBytes();

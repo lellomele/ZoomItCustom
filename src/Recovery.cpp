@@ -20,12 +20,16 @@ static bool ValidRect(RECT r) noexcept {
     return w>0 && h>0 && w<=32768 && h<=32768;
 }
 static bool ValidFields(const State& state) noexcept {
-    if(state.mode>Mode::Break ||
+    if(state.mode>Mode::WhiteboardDraw ||
        !std::isfinite(state.zoom)||!std::isfinite(state.liveZoom)||state.zoom<1||state.zoom>32||
        state.liveZoom<1||state.liveZoom>32||state.penWidth<1||state.penWidth>600||
        state.rootPenWidth<1||state.rootPenWidth>40)return false;
     if(state.mode!=Mode::Idle && !ValidRect(state.monitor))return false;
     if(state.liveActive>1||state.pointerArrow>1)return false;
+    if(state.mode==Mode::Whiteboard || state.mode==Mode::WhiteboardDraw) {
+        if(state.boardBlack>1 || state.boardSpacing<8 || state.boardSpacing>256 || state.boardSpacing%4 ||
+           state.boardOpacity<1 || state.boardOpacity>60 || state.liveActive)return false;
+    }
     if(state.liveActive||state.mode==Mode::LiveZoom||state.mode==Mode::FrozenLiveDraw){
         if(!ValidRect(state.source)||state.source.left<state.monitor.left||state.source.top<state.monitor.top||
            state.source.right>state.monitor.right||state.source.bottom>state.monitor.bottom)return false;
@@ -290,7 +294,7 @@ void Client::Commit(State state,HDC canvas,HDC cursorPatch,const RECT* cursorRec
     if(previousMode_==Mode::Idle&&state.mode!=Mode::Idle)checkpointFailures_=0;
     previousMode_=state.mode;
     const bool imageMode=state.mode==Mode::Zoom||state.mode==Mode::Draw||
-        state.mode==Mode::LiveDraw||state.mode==Mode::FrozenLiveDraw;
+        state.mode==Mode::LiveDraw||state.mode==Mode::FrozenLiveDraw||state.mode==Mode::WhiteboardDraw;
     // Validate geometry and scalars before overwriting the inactive image slot.
     state.canvasSlot=-1;state.canvasSequence=state.canvasWidth=state.canvasHeight=0;
     state.sequence=stateSequence_+1;state.checksum=0;

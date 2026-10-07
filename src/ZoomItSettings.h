@@ -6,6 +6,12 @@ DWORD	g_ToggleKey = (HOTKEYF_CONTROL << 8)| '1';
 DWORD	g_LiveZoomToggleKey = ((HOTKEYF_CONTROL) << 8)| '2';
 DWORD	g_DrawToggleKey = ((HOTKEYF_CONTROL) << 8)| '3';
 DWORD	g_BreakToggleKey = ((HOTKEYF_CONTROL) << 8)| '4';
+DWORD g_WhiteboardToggleKey = (HOTKEYF_CONTROL << 8) | '6';
+DWORD g_WhiteboardBackgroundKey = 'C';
+DWORD g_WhiteboardBlack = 0;
+DWORD g_WhiteboardSpacing = 32;
+DWORD g_WhiteboardOpacity = 16;
+
 DWORD   g_SnipToggleKey = ((HOTKEYF_CONTROL) << 8) | '5';
 
 DWORD	g_ShowExpiredTime = 1;
@@ -38,6 +44,11 @@ LOGFONT	g_LogFont;
 DWORD g_SettingsSchema=0;
 
 REG_SETTING RegSettings[] = {
+    {L"WhiteboardToggleKey",SETTING_TYPE_DWORD,0,&g_WhiteboardToggleKey,static_cast<DOUBLE>(g_WhiteboardToggleKey)},
+    {L"WhiteboardBackgroundKey",SETTING_TYPE_DWORD,0,&g_WhiteboardBackgroundKey,static_cast<DOUBLE>(g_WhiteboardBackgroundKey)},
+    {L"WhiteboardBlack",SETTING_TYPE_DWORD,0,&g_WhiteboardBlack,0},
+    {L"WhiteboardSpacing",SETTING_TYPE_DWORD,0,&g_WhiteboardSpacing,32},
+    {L"WhiteboardOpacity",SETTING_TYPE_DWORD,0,&g_WhiteboardOpacity,16},
     {L"SettingsSchema",SETTING_TYPE_DWORD,0,&g_SettingsSchema,0},
     { L"ToggleKey", SETTING_TYPE_DWORD, 0, &g_ToggleKey, static_cast<DOUBLE>(g_ToggleKey) },
     { L"LiveZoomToggleKey", SETTING_TYPE_DWORD, 0, &g_LiveZoomToggleKey, static_cast<DOUBLE>(g_LiveZoomToggleKey) },

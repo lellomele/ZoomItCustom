@@ -46,6 +46,7 @@ Shortcuts can be changed in the options. LiveDraw always uses the configured Dra
 | Ctrl+3 | Draw |
 | Ctrl+4 | Break timer |
 | Ctrl+5 | Copy a snip |
+| Ctrl+6 | Whiteboard |
 | Ctrl+Shift+3 | LiveDraw (Draw shortcut + Shift) |
 | Ctrl+Shift+5 | Save a PNG snip |
 
@@ -70,6 +71,18 @@ Mode shortcuts follow these rules, also during zoom animations:
 In Draw and LiveDraw, **Ctrl+Z** undoes and **E** clears annotations. The first **right-click** pauses drawing and shows a small ring in the active colour with a dark centre. Moving the mouse adds no strokes. **Left-click** resumes drawing; a second **right-click** exits. **Esc** also ends drawing. LiveDraw does not support highlighting or blur. In the timer, Up/Down and the mouse wheel adjust minutes; Left/Right adjust ten seconds and **Esc** ends the break.
 
 Snip works on the desktop, in static Zoom, in LiveZoom and in Draw, including paused drawing. It preserves annotations, magnification and the drawing state after capture or cancellation. With LiveZoom it temporarily freezes the image, then restores the live view. Snip is ignored during an unfinished stroke, the timer, or LiveDraw over LiveZoom; it remains available for LiveDraw on the desktop. **Ctrl+Shift+5** saves a PNG under the same rules. When saving, choose **Zoomed PNG** for the displayed size or **Actual size PNG** to remove the magnification.
+
+## Whiteboard
+
+**Ctrl+6** opens or closes a fullscreen whiteboard on the monitor under the pointer. Configure its shortcut, initial white/black background, local background-switch key (default **C**), square size and grid opacity in the **Whiteboard** tab before About.
+
+Outside Draw, **C** alternates the background and **Ctrl+mouse wheel** or **Ctrl+Up / Ctrl+Down** changes square size in steps of four. Square sizes range from 8 to 256 and follow Windows display scaling. Grid opacity ranges from 1 to 60%.
+
+Use the configured Draw shortcut (**Ctrl+3** by default) to draw with the usual tools. Whiteboard setup is unavailable while Draw is active. **Esc ends Draw and removes its annotations**, returning to the editable whiteboard. Press Draw again to start a new drawing. Save or copy annotations before leaving Draw if you want to keep them.
+
+**Esc on the whiteboard keeps it open** and briefly displays its configured exit shortcut. Press that whiteboard shortcut again to close it, including during Draw. Zoom, LiveZoom, LiveDraw and Break shortcuts are ignored while the whiteboard is open; Snip remains available in eligible states. The exit message is hidden before drawing or capture.
+
+The optional Supervisor also restores the whiteboard background and grid after a crash. A drawing on it follows the existing paused drawing recovery rules. Keep the app and Supervisor from the same package together.
 
 ## If something goes wrong
 

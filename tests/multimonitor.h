@@ -99,8 +99,8 @@ MultiMonitorResults RunMultiMonitorRegression(HWND host) {
                     "Leaving LiveDraw must retain its previous live factor on each monitor");
                 SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);pump(160);
                 require(!IsWindow(g_hWndLiveZoom) && mode()==0,"Repeated LiveZoom exits must release the physical magnifier");
-                const auto cursor=ReadOwnedNormalPointer(host,"Actual monitor LiveZoom exit");
-                require((cursor.flags&CURSOR_SHOWING) && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW),"Real monitor exits must restore the visible system pointer");
+                const auto cursor=ResetThenReadOwnedNormalPointer(host,"Actual monitor LiveZoom exit");
+                require((cursor.flags&CURSOR_SHOWING) && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW),"Fixture-reset monitor exits must expose CURSOR_SHOWING with the logical arrow cursor");
                 result.cases+=6;
             }
         }
@@ -108,7 +108,7 @@ MultiMonitorResults RunMultiMonitorRegression(HWND host) {
     return result;
 }
 void PrintMultiMonitorResults(const MultiMonitorResults& result) {
-    std::cout<<"{\"passed\":true,\"physical_multimonitor\":true,\"logical_monitors\":"<<result.monitors
+    std::cout<<"{\"passed\":true,\"cursor_check_scope\":\"logical-state-or-fixture-cleanup\",\"visual_cursor_verification\":false,\"physical_multimonitor\":true,\"logical_monitors\":"<<result.monitors
         <<",\"active_display_paths\":"<<result.activePaths<<",\"duplicated_sources\":"<<result.duplicatedSources
         <<",\"negative_origin_monitors\":"<<result.negativeOrigins<<",\"cases\":"<<result.cases<<",\"screens\":[";
     for(size_t i=0;i<result.bounds.size();++i) {

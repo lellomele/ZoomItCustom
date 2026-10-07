@@ -176,7 +176,7 @@ LiveWheelResults RunLiveWheelRegression(HWND host) {
         SendMessage(g_hWndMain,recovery::ResetMessage,0,0);pump(20);
         waitFor([]{return !g_LiveZoomWheel.Installed() && !g_LiveZoomWheel.KeyboardInstalled();},"Leaving LiveZoom must remove both input hooks");
         require(!IsWindow(g_hWndLiveZoom),"Wheel cleanup must destroy the magnifier");
-        ReadOwnedNormalPointer(host,"Ctrl+wheel cleanup");TraceLiveWheelPhase("cleanup done");
+        ResetThenReadOwnedNormalPointer(host,"Ctrl+wheel cleanup");TraceLiveWheelPhase("cleanup done");
     };
     clean();
     HHOOK observer=SetWindowsHookExW(WH_MOUSE_LL,WheelTestObserver,GetModuleHandleW(nullptr),0);
@@ -222,7 +222,7 @@ LiveWheelResults RunLiveWheelRegression(HWND host) {
         const size_t afterExplicitExit=downstreamWheelEvents;
         InjectTestWheel(WHEEL_DELTA);InjectTestKey(VK_LCONTROL,true);
         require(downstreamWheelEvents==afterExplicitExit+1,"Ctrl+wheel may resume its underlying action only after explicit LiveZoom exit");
-        ReadOwnedNormalPointer(host,"Explicit LiveZoom exit at 1x");++results.minimumCases;open();
+        ResetThenReadOwnedNormalPointer(host,"Explicit LiveZoom exit at 1x");++results.minimumCases;open();
         InjectTestKey(VK_LCONTROL,false);
         InjectTestWheel(20);InjectTestWheel(20);require(level()==2.0f,"Partial wheel deltas must not each cause a full zoom step");
         InjectTestWheel(80);waitFor([&]{return level()==2.25f;},"High-resolution partial input must accumulate to one full notch");
@@ -343,7 +343,7 @@ LiveWheelResults RunLiveWheelRegression(HWND host) {
         InjectTestKey(VK_ESCAPE,true);
         if(animated)require(SetTimer(exiting,heldTimer,ZOOM_LEVEL_STEP_TIME,nullptr)!=0,"Resume the same owned exit animation timer");
         waitFor([]{return !IsWindow(g_hWndLiveZoom);},"Native Escape must complete LiveZoom exit without its overlay taking focus");
-        ReadOwnedNormalPointer(host,"Native Escape completion");++results.escapeCases;
+        ResetThenReadOwnedNormalPointer(host,"Native Escape completion");++results.escapeCases;
         openEscape("backend 1x exit");CtrlTestWheel(-16*WHEEL_DELTA);waitFor([&]{return level()==1.0f;},"Prepare active LiveZoom at 1x before native Escape");
         InjectTestKey(VK_ESCAPE,false);InjectTestKey(VK_ESCAPE,true);
         waitFor([]{return !IsWindow(g_hWndLiveZoom);},"Escape must explicitly exit LiveZoom even at its active 1x minimum");
@@ -630,7 +630,7 @@ LiveWheelResults RunLiveWheelRegression(HWND host) {
     return results;
 }
 void PrintLiveWheelResults(const LiveWheelResults& result) {
-    std::cout<<"{\"passed\":true,\"live_wheel\":true,\"native_cases\":"<<result.nativeCases
+    std::cout<<"{\"passed\":true,\"cursor_check_scope\":\"logical-state-or-fixture-cleanup\",\"visual_cursor_verification\":false,\"live_wheel\":true,\"native_cases\":"<<result.nativeCases
         <<",\"minimum_zoom_cases\":"<<result.minimumCases<<",\"partial_input_cases\":"<<result.partialCases<<",\"passthrough_cases\":"<<result.passthroughCases
         <<",\"blocked_cases\":"<<result.blockedCases<<",\"stale_request_cases\":"<<result.staleCases
         <<",\"entry_exit_cycles\":"<<result.cycles<<",\"installation_failure_cases\":"<<result.failureCases

@@ -36,6 +36,7 @@ size_t privateBytes() {
     GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),sizeof(counters));
     return counters.PrivateUsage;
 }
+// Last successful MagShowSystemCursor request, not a compositor/scanout measurement.
 bool systemCursorShown = true;
 bool denyInputTransform = false;
 // The privileged fullscreen input transform is simulated for state-machine tests.
@@ -49,7 +50,9 @@ BOOL WINAPI TestShowSystemCursor(BOOL show) {
     if(result) systemCursorShown=show!=FALSE;
     return result;
 }
-CURSORINFO ReadOwnedNormalPointer(HWND host,const char* context) {
+// Fixture reset followed by a read. This repairs cursor state and must never be
+// used as evidence for stationary exit visibility. See ObserveNativeCursor.
+CURSORINFO ResetThenReadOwnedNormalPointer(HWND host,const char* context) {
     ActivateTestHost(host);
     POINT position{120,120};ClientToScreen(host,&position);SetCursorPos(position.x,position.y);
     // Process the owned window's normal cursor event synchronously, preserving the
@@ -77,7 +80,7 @@ CURSORINFO ReadOwnedNormalPointer(HWND host,const char* context) {
         wchar_t surfaceClass[96]{};GetClassNameW(surface,surfaceClass,_countof(surfaceClass));
         std::cerr<<"Owned normal pointer mismatch: context="<<context<<" read="<<read<<" error="<<error
                  <<" flags="<<cursor.flags<<" cursor="<<cursor.hCursor<<" expected="<<LoadCursor(nullptr,IDC_ARROW)
-                 <<" hardware_shown="<<systemCursorShown<<" foreground="<<GetForegroundWindow()<<" capture="<<GetCapture()
+                 <<" last_mag_visibility_request="<<systemCursorShown<<" foreground="<<GetForegroundWindow()<<" capture="<<GetCapture()
                  <<" mode="<<(IsWindow(g_hWndMain) ? SendMessage(g_hWndMain,WM_TEST_QUERY_MODE,0,0) : 0)
                  <<" pointer="<<actual.x<<","<<actual.y<<" surface="<<surface<<" host="<<host<<"\n";
         std::wcerr<<L"Owned normal pointer surface: "<<surfaceClass<<L"\n";
@@ -175,13 +178,13 @@ INT_PTR TestOptionsProcImpl(HWND dialog, UINT message, WPARAM wParam, LPARAM lPa
                 (g_AnimateZoom ? BST_CHECKED : BST_UNCHECKED);
         wchar_t title[128]{}, version[64]{}, copyright[256]{}, lastTab[32]{};
         GetWindowText(dialog,title,_countof(title));
-        optionsValid &= wcscmp(title,L"ZoomIt Custom 1.2.0")==0;
+        optionsValid &= wcscmp(title,L"ZoomIt Custom " _T(FILE_VERSION_STRING))==0;
         TCITEM item{};item.mask=TCIF_TEXT;item.pszText=lastTab;item.cchTextMax=_countof(lastTab);
         TabCtrl_GetItem(GetDlgItem(dialog,IDC_TAB),ABOUT_PAGE,&item);
         optionsValid &= wcscmp(lastTab,L"About")==0;
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_VERSION,version,_countof(version));
         GetDlgItemText(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_COPYRIGHT,copyright,_countof(copyright));
-        optionsValid &= wcscmp(version,L"Version 1.2.0")==0 &&
+        optionsValid &= wcscmp(version,L"Version " _T(FILE_VERSION_STRING))==0 &&
                         wcsstr(copyright,L"Prof. ing. Raffaele Mele")!=nullptr;
         optionsValid &= IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_REPOSITORY)) &&
                         IsWindow(GetDlgItem(g_OptionsTabs[ABOUT_PAGE].hPage,IDC_ABOUT_LICENSE));
@@ -267,12 +270,12 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         while(!complete() && GetTickCount64()<deadline) pump(5);
         require(complete(),message);
     };
-    auto cursorVisible=[&] {
+    auto resetAndCheckLogicalCursor=[&] {
         ActivateTestHost(host);SetCursorPos(125,125);pump(10);
         CURSORINFO cursor{sizeof(cursor)};
         require(GetCursorInfo(&cursor) && (cursor.flags&CURSOR_SHOWING) &&
                 cursor.hCursor==LoadCursor(nullptr,IDC_ARROW) && systemCursorShown,
-                "Animated and immediate exits must restore the normal visible mouse pointer");
+                "Fixture-reset animated and immediate exits must expose the logical arrow and a successful system-cursor visibility request");
     };
     auto toggle=[&] {SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);};
     auto settle=[&] {
@@ -323,7 +326,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
     auto close=[&] {
         toggle();
         waitUntil([] {return !IsWindow(g_hWndLiveZoom);},"Animated LiveZoom exit must finish and destroy the magnifier");
-        cursorVisible();
+        resetAndCheckLogicalCursor();
     };
     auto prepare=[&](bool fullscreen) {
         require(!IsWindow(g_hWndLiveZoom) && !(mode()&1),"Animation cases must start from the desktop");
@@ -429,7 +432,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
             toggle();
             require(!IsWindow(g_hWndLiveZoom),"Unchecked LiveZoom animation must close synchronously");
             pump(35);require(!IsWindow(g_hWndLiveZoom),"Immediate exit must not leave a delayed animation callback");
-            cursorVisible();++results.immediateCases;
+            resetAndCheckLogicalCursor();++results.immediateCases;
         }
         prepare(fullscreen);g_AnimateZoom=FALSE;g_AnimateLiveZoom=TRUE;
         toggle();
@@ -440,7 +443,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
         observeProgress(first,true,1,target,"LiveZoom entry must progress through another real intermediate native frame");
         settle();beginExit();
         waitUntil([] {return !IsWindow(g_hWndLiveZoom);},"Animated exit must reach the desktop");
-        cursorVisible();++results.animatedCases;
+        resetAndCheckLogicalCursor();++results.animatedCases;
 
         prepare(fullscreen);toggle();settle();
         SendMessage(g_hWndLiveZoom,WM_HOTKEY,0,0);
@@ -543,7 +546,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
                     "Forced runtime recovery must cancel animations and return to the desktop synchronously");
             pump(150);
             require(!IsWindow(g_hWndLiveZoom),"Recovery must not leave a timer that recreates LiveZoom");
-            cursorVisible();++results.resetCases;
+            resetAndCheckLogicalCursor();++results.resetCases;
         }
     }
     prepare(false);toggle();settle();close();pump(75);
@@ -594,7 +597,7 @@ LiveAnimationResults RunLiveAnimationRegression(HWND host) {
 }
 
 void PrintLiveAnimationResults(const LiveAnimationResults& result) {
-    std::cout<<"{\"passed\":true,\"immediate_cases\":"<<result.immediateCases
+    std::cout<<"{\"passed\":true,\"cursor_check_scope\":\"logical-state-or-fixture-cleanup\",\"visual_cursor_verification\":false,\"immediate_cases\":"<<result.immediateCases
         <<",\"animated_cases\":"<<result.animatedCases<<",\"reverse_events\":"<<result.reverseEvents
         <<",\"set_zoom_cases\":"<<result.setZoomCases<<",\"observed_intermediate_native_frames\":"<<result.observedFrames<<",\"draw_transition_cases\":"<<result.drawCases
         <<",\"snip_transition_cases\":"<<result.snipCases<<",\"reset_transition_cases\":"<<result.resetCases
@@ -1131,7 +1134,7 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
                 "Esc must completely clean up suspended desktop LiveDraw without calling an unavailable magnifier API");
         CURSORINFO cursor{sizeof(cursor)};
         require(GetCursorInfo(&cursor) && (cursor.flags&CURSOR_SHOWING) && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW) && systemCursorShown,
-                "Optional API absence must not leave the system mouse pointer hidden after LiveDraw");
+                "Optional API absence must leave CURSOR_SHOWING, the logical arrow and a successful visibility request after LiveDraw");
         ++results.unavailableApiCases;clean();
     }
     // Denied graphics allocation must keep the previous session intact and leave no half-created overlay.
@@ -1244,7 +1247,7 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
             g_TestChangedMonitorGeometry=false;
             require(mode()==0 && !IsWindowVisible(g_hWndMain) && !IsWindow(g_hWndLiveZoom) && GetCapture()!=g_hWndMain,
                     "Obsolete display geometry must synchronously release drawing, magnification and capture");
-            ReadOwnedNormalPointer(host,"Changed simulated monitor geometry");++results.topologyCases;
+            ResetThenReadOwnedNormalPointer(host,"Changed simulated monitor geometry");++results.topologyCases;
         }
         for(UINT cancellation:{WM_CANCELMODE,WM_CAPTURECHANGED}) {
             clean();press(LIVE_DRAW_HOTKEY);pump(20);stroke(false);
@@ -1316,7 +1319,7 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
         const unsigned postAttempts=zoomit::runtime::Calls(Api::Post);zoomit::runtime::Clear();
         require(postAttempts && mode()==0 && !IsWindow(g_hWndLiveZoom) && !IsWindowVisible(g_hWndMain) && GetCapture()!=g_hWndMain,
                 "A failed queued reset must fall back to synchronous safe cleanup after persistent input loss");
-        ReadOwnedNormalPointer(host,"Persistent input loss with failed reset posting");++results.runtimeFailureCases;clean();
+        ResetThenReadOwnedNormalPointer(host,"Persistent input loss with failed reset posting");++results.runtimeFailureCases;clean();
     }
 
     // Real registrations must derive LiveDraw from Draw, independent of LiveZoom.
@@ -1352,7 +1355,7 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
     return results;
 }
 void PrintModePolicyResults(const ModePolicyResults& result) {
-    std::cout<<"{\"passed\":true,\"mode_policy_states\":"<<result.states
+    std::cout<<"{\"passed\":true,\"cursor_check_scope\":\"logical-state-or-fixture-cleanup\",\"visual_cursor_verification\":false,\"mode_policy_states\":"<<result.states
         <<",\"ignored_external_keys\":"<<result.ignoredKeys<<",\"snip_restore_cases\":"<<result.snipCases
         <<",\"modal_ignored_keys\":"<<result.modalKeys<<",\"native_registration_cases\":"<<result.registrationCases
         <<",\"animation_policy_cases\":"<<result.animationCases<<",\"gui_hotkey_cases\":"<<result.guiCases
@@ -1372,8 +1375,12 @@ void PrintModePolicyResults(const ModePolicyResults& result) {
 #include "drawing_effects.h"
 #include "selection.h"
 #include "multimonitor.h"
+#include "native_stationary_cursor.h"
 
 int main(int argc, char** argv) {
+    // The child serves only a normal native host, before app/registry initialization.
+    if(argc>2 && strcmp(argv[1],"--stationary-cursor-host")==0)return RunNativeCursorHostChild(argv[2]);
+    const bool stationaryNativeOnly=argc>1 && strcmp(argv[1],"--stationary-native-cursor-only")==0;
     const bool captureOnly = argc>1 && strcmp(argv[1],"--capture-only")==0;
     const bool effectsOnly = argc>1 && strcmp(argv[1],"--drawing-effects-only")==0;
     const bool selectionOnly = argc>1 && strcmp(argv[1],"--selection-only")==0;
@@ -1542,6 +1549,13 @@ int main(int argc, char** argv) {
         g_hWndMain=InitInstance(GetModuleHandle(nullptr),SW_HIDE);
         require(g_hWndMain!=nullptr,"Main window creation");
         g_SliderZoomLevel=0; g_AnimateZoom=FALSE;g_AnimateLiveZoom=FALSE;
+        if(stationaryNativeOnly) {
+            const int result=RunNativeStationaryCursorRegression();
+            DestroyWindow(g_hWndMain);MagUninitialize();
+            // Restore the original position only after every observation has ended.
+            if(result!=77)SetCursorPos(oldCursor.x,oldCursor.y);
+            isolatedRegistry->VerifyUntouched();return result;
+        }
         WNDCLASS wc{}; wc.lpfnWndProc=DefWindowProc; wc.hInstance=GetModuleHandle(nullptr); wc.hCursor=LoadCursor(nullptr,IDC_ARROW); wc.lpszClassName=L"ZoomItTestHost"; RegisterClass(&wc);
         // Keep native cursor and capture probes over this process-owned temporary host.
         // Ambient browser panels may otherwise stay above a normal host and supply their
@@ -1671,7 +1685,7 @@ int main(int argc, char** argv) {
         denyInputTransform=true;
         SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);pump(100);
         require(!IsWindow(g_hWndLiveZoom) && modeState()==0 && systemCursorShown,
-                "Denied fullscreen input transform must return safely to desktop with visible cursor");
+                "Denied fullscreen input transform must return to idle and successfully request system-cursor visibility");
         denyInputTransform=false;
         g_fullScreenWorkaround=false;
         size_t suspensionCases=0, suspensionCycles=0, suspendedSnipCases=0, nativeResumeCases=0;
@@ -1699,8 +1713,8 @@ int main(int argc, char** argv) {
             ++ringChecks;
             const BOOL inspected=GetCursorInfo(&pointer);
             const DWORD inspectError=inspected ? ERROR_SUCCESS : GetLastError();
-            const bool ringVisible=inspected && (pointer.flags&CURSOR_SHOWING) && pointer.hCursor==ring;
-            if(!ringVisible) {
+            const bool logicalRingPresent=inspected && (pointer.flags&CURSOR_SHOWING) && pointer.hCursor==ring;
+            if(!logicalRingPresent) {
                 POINT position{};GetCursorPos(&position);
                 HWND surface=WindowFromPoint(position);
                 wchar_t surfaceClass[96]{};GetClassNameW(surface,surfaceClass,_countof(surfaceClass));
@@ -1711,14 +1725,14 @@ int main(int argc, char** argv) {
                          <<" animate_zoom="<<unsigned(g_AnimateZoom)<<" animate_live="<<unsigned(g_AnimateLiveZoom)
                          <<" cursor_read="<<inspected<<" cursor_error="<<inspectError<<" cursor_flags="<<pointer.flags
                          <<" cursor="<<pointer.hCursor<<" expected="<<ring
-                         <<" hardware_shown="<<systemCursorShown<<" thread_cursor="<<GetCursor()
+                         <<" last_mag_visibility_request="<<systemCursorShown<<" thread_cursor="<<GetCursor()
                          <<" foreground="<<GetForegroundWindow()<<" capture="<<GetCapture()
                          <<" main="<<g_hWndMain<<" mouse="<<position.x<<","<<position.y<<" surface="<<surface<<"\n";
                 std::wcerr<<L"Ring mismatch surface class: "<<surfaceClass<<L"\n";
             }
-            require(ringVisible,"The suspension circle must remain visible as the real mouse cursor");
+            require(logicalRingPresent,"Suspension must expose CURSOR_SHOWING with the logical circle-cursor handle");
             require(GetCapture()==g_hWndMain,"Suspension must receive both buttons even through transparent LiveDraw");
-            require(systemCursorShown,"Suspension ring must enable the native cursor surface");
+            require(systemCursorShown,"Suspension ring must successfully request system-cursor visibility");
             ICONINFO icon{};require(GetIconInfo(ring,&icon)!=FALSE,"Inspect suspension cursor");
             BITMAP bitmap{};GetObject(icon.hbmColor,sizeof(bitmap),&bitmap);
             HDC screen=GetDC(nullptr);
@@ -1748,7 +1762,7 @@ int main(int argc, char** argv) {
             require(GetCapture()!=g_hWndMain && !SendMessage(g_hWndMain,WM_TEST_QUERY_SUSPENDED_CURSOR,0,0),
                     "Resuming Draw must release suspension capture and ring");
             if(IsWindowVisible(g_hWndLiveZoom))
-                require(!systemCursorShown,"Resumed LiveDraw must hide the hardware cursor to avoid duplicate pointers, including fullscreen magnification");
+                require(!systemCursorShown,"Resumed LiveDraw must successfully request system-cursor hiding, including fullscreen magnification");
             const POINT point=rawMouse();
             SendMessage(g_hWndMain,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(point.x+8,point.y));
             SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(point.x+8,point.y));
@@ -1863,9 +1877,9 @@ int main(int argc, char** argv) {
             require(!(GetWindowLongPtr(g_hWndMain,GWL_EXSTYLE)&WS_EX_LAYERED),"Second right click must clear LiveDraw's transparent window mode");
             if(IsWindowVisible(g_hWndLiveZoom)) SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
             pump(30);
-            const CURSORINFO pointer=ReadOwnedNormalPointer(host,"Completed suspension exit");
+            const CURSORINFO pointer=ResetThenReadOwnedNormalPointer(host,"Completed suspension exit");
             require((pointer.flags&CURSOR_SHOWING) && pointer.hCursor==LoadCursor(nullptr,IDC_ARROW),
-                    "Every completed suspension exit must restore the normal mouse pointer");
+                    "Fixture-reset suspension exits must expose CURSOR_SHOWING with the logical arrow cursor");
         }
         g_DrawPointer=FALSE;g_fullScreenWorkaround=FALSE;
         SendMessage(g_hWndMain,WM_HOTKEY,DRAW_HOTKEY,0);pump(30);
@@ -1919,8 +1933,8 @@ int main(int argc, char** argv) {
                 SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(175,150));
                 SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(30);
                 require(!IsWindow(g_hWndLiveZoom) && !IsWindowVisible(g_hWndMain),"LiveZoom shortcut must close active LiveDraw synchronously");
-                const CURSORINFO cursor=ReadOwnedNormalPointer(host,"Closing active LiveDraw");
-                require((cursor.flags&CURSOR_SHOWING) && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW),"Closing active LiveDraw must restore the system pointer");
+                const CURSORINFO cursor=ResetThenReadOwnedNormalPointer(host,"Closing active LiveDraw");
+                require((cursor.flags&CURSOR_SHOWING) && cursor.hCursor==LoadCursor(nullptr,IDC_ARROW),"Fixture-reset LiveDraw exit must expose CURSOR_SHOWING with the logical arrow cursor");
                 return;
             }
             if(liveDraw) {
@@ -1941,14 +1955,14 @@ int main(int argc, char** argv) {
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
             pump(100);
             require(!IsWindow(g_hWndLiveZoom),"LiveZoom must close");
-            const CURSORINFO cursor=ReadOwnedNormalPointer(host,"Exiting LiveZoom after drawing");
-            require((cursor.flags&CURSOR_SHOWING)!=0,"System pointer must be visible after exiting LiveZoom");
+            const CURSORINFO cursor=ResetThenReadOwnedNormalPointer(host,"Exiting LiveZoom after drawing");
+            require((cursor.flags&CURSOR_SHOWING)!=0,"Fixture-reset LiveZoom exit must expose the CURSOR_SHOWING flag");
         };
         size_t liveToggleCount = 0;
-        auto pointerVisible = [&] {
-            const CURSORINFO cursor=ReadOwnedNormalPointer(host,"LiveZoom toggle exit");
+        auto resetAndCheckLogicalPointer = [&] {
+            const CURSORINFO cursor=ResetThenReadOwnedNormalPointer(host,"LiveZoom toggle exit");
             require((cursor.flags & CURSOR_SHOWING) && cursor.hCursor,
-                    "Every LiveZoom exit must restore a real visible pointer");
+                    "Fixture-reset LiveZoom exit must expose CURSOR_SHOWING and a non-null logical cursor handle");
             if(cursor.hCursor!=LoadCursor(nullptr,IDC_ARROW)) {
                 POINT point{};GetCursorPos(&point);wchar_t name[128]{};GetClassName(WindowFromPoint(point),name,_countof(name));
                 std::wcerr<<L"Unexpected exit cursor "<<cursor.hCursor<<L" at "<<point.x<<L","<<point.y<<L" over "<<name<<L"\n";
@@ -1962,12 +1976,12 @@ int main(int argc, char** argv) {
                 SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
                 ++liveToggleCount;
                 require(IsWindowVisible(g_hWndLiveZoom)==((i%2)==0),"Each activation must toggle LiveZoom exactly once");
-                if(i%2) pointerVisible();
+                if(i%2) resetAndCheckLogicalPointer();
                 if(delay) pump(delay);
-                if(i%2) pointerVisible();
+                if(i%2) resetAndCheckLogicalPointer();
             }
             require(!IsWindow(g_hWndLiveZoom),"Every complete sequence must close without forced cleanup");
-            pointerVisible();
+            resetAndCheckLogicalPointer();
             ActivateTestHost(host);
         }
         {
@@ -2009,14 +2023,14 @@ int main(int argc, char** argv) {
                 require(GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)==snipGdi,"Snip copy, save and cancellation must not leak GDI objects");
             }
             SendMessage(g_hWndMain,WM_HOTKEY,ZOOM_HOTKEY,SHALLOW_DESTROY); pump(30);
-            pointerVisible();
+            resetAndCheckLogicalPointer();
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(100);
             cancelSnip=false; SetTimer(nullptr,0,15,SelectTestRegion);
             SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0); pump(100);
             require(g_TestSnipBitmap && IsWindowVisible(g_hWndLiveZoom),"Snip from LiveZoom must resume LiveZoom");
             DeleteObject(g_TestSnipBitmap); g_TestSnipBitmap=nullptr;
             SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0); pump(30);
-            pointerVisible();
+            resetAndCheckLogicalPointer();
         }
         if(!snipOnly) {runCycle(false); runCycle(true); runCycle(false,true); runCycle(true,true);
             runCycle(false,true,true); runCycle(true,true,true);}
@@ -2048,13 +2062,13 @@ int main(int argc, char** argv) {
         DestroyWindow(g_hWndMain);
         require(GetCapture()!=g_hWndMain,"Quitting while suspended must release mouse capture");
         require(!IsWindow(g_hWndLiveZoom),"Quitting must destroy the magnifier");
-        const CURSORINFO cursor=ReadOwnedNormalPointer(host,"Quitting while suspended");
-        require((cursor.flags&CURSOR_SHOWING)!=0,"Quitting must restore the system pointer");
+        const CURSORINFO cursor=ResetThenReadOwnedNormalPointer(host,"Quitting while suspended");
+        require((cursor.flags&CURSOR_SHOWING)!=0,"Fixture-reset quit cleanup must expose the CURSOR_SHOWING flag");
         DestroyWindow(host);
         MagUninitialize();
         SetCursorPos(oldCursor.x,oldCursor.y);
         isolatedRegistry->VerifyUntouched();
-        std::cout<<"{\"passed\":true,\"live_draw_cycles\":"<<drawCycleCount<<",\"undo_1080p_entries\":"<<count
+        std::cout<<"{\"passed\":true,\"cursor_check_scope\":\"logical-state-or-fixture-cleanup\",\"visual_cursor_verification\":false,\"live_draw_cycles\":"<<drawCycleCount<<",\"undo_1080p_entries\":"<<count
           <<",\"suspension_cases\":"<<suspensionCases<<",\"suspend_resume_cycles\":"<<suspensionCycles
           <<",\"native_resume_cases\":"<<nativeResumeCases<<",\"suspended_snip_cases\":"<<suspendedSnipCases<<",\"live_zoom_ignore_cases\":"<<liveZoomIgnoreCases<<",\"ignored_zoom_toggles\":"<<ignoredZoomToggles
           <<",\"ignored_zoom_menu_commands\":"<<ignoredZoomMenuCommands<<",\"live_toggle_events\":"<<liveToggleCount<<",\"effect_operations\":1200,\"effects_milliseconds\":"<<effectsMilliseconds

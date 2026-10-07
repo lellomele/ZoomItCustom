@@ -160,7 +160,7 @@ ZoomGranularityResults RunZoomGranularityRegression(HWND host) {
     auto clean=[&] {
         SendMessage(g_hWndMain,recovery::ResetMessage,0,0);pump(30);
         require(!IsWindow(g_hWndLiveZoom) && !(SendMessage(g_hWndMain,WM_TEST_QUERY_MODE,0,0)&1),"Cleanup must leave the desktop");
-        ActivateTestHost(host);ReadOwnedNormalPointer(host,"Fine zoom cleanup");
+        ActivateTestHost(host);ResetThenReadOwnedNormalPointer(host,"Fine zoom cleanup");
     };
     auto prepare=[&] {ActivateTestHost(host);SetCursorPos(125,125);pump(10);};
     for(bool animated:{false,true}) {
@@ -233,7 +233,7 @@ ZoomGranularityResults RunZoomGranularityRegression(HWND host) {
         }
         SendMessage(g_hWndMain,WM_HOTKEY,LIVE_HOTKEY,0);
         waitFor([]{return !IsWindow(g_hWndLiveZoom);},"The explicit LiveZoom hotkey must exit the active 1x view");
-        ReadOwnedNormalPointer(host,"Explicit exit at minimum zoom");++results.liveCases;clean();
+        ResetThenReadOwnedNormalPointer(host,"Explicit exit at minimum zoom");++results.liveCases;clean();
     }
     require(NextZoomLevel(32.0f,true)==32.0f && NextZoomLevel(1.0f,false)==1.0f,
             "Supported zoom boundaries must remain bounded");
@@ -256,7 +256,7 @@ ZoomGranularityResults RunZoomGranularityRegression(HWND host) {
     return results;
 }
 void PrintZoomGranularityResults(const ZoomGranularityResults& results) {
-    std::cout<<"{\"passed\":true,\"zoom_granularity\":true,\"migration_cases\":"<<results.migrationCases
+    std::cout<<"{\"passed\":true,\"cursor_check_scope\":\"logical-state-or-fixture-cleanup\",\"visual_cursor_verification\":false,\"zoom_granularity\":true,\"migration_cases\":"<<results.migrationCases
         <<",\"registry_cases\":"<<results.registryCases<<",\"gui_cases\":"<<results.guiCases
         <<",\"static_cases\":"<<results.staticCases<<",\"live_cases\":"<<results.liveCases
         <<",\"rapid_reversal_cases\":"<<results.reversalCases<<",\"resource_adjustments\":400"

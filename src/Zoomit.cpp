@@ -220,6 +220,28 @@ void RestoreSystemPointer() noexcept {
     SetCursor(LoadCursor(nullptr, IDC_ARROW));
 }
 
+// Release the control's cursor surface while its own window is still visible.
+// A later hardware-cursor request cannot repair a stale magnifier cursor handoff.
+void PrepareLiveZoomCursorRelease(HWND liveWindow) noexcept {
+    const HWND magnifier = g_hWndLiveZoomMag;
+    if (g_fullScreenWorkaround || !IsWindow(liveWindow) || !IsWindow(magnifier) ||
+        GetWindowThreadProcessId(liveWindow, nullptr) != GetCurrentThreadId() ||
+        GetWindowThreadProcessId(magnifier, nullptr) != GetCurrentThreadId() ||
+        GetParent(magnifier) != liveWindow ||
+        !(GetWindowLong(magnifier, GWL_STYLE) & MS_SHOWMAGNIFIEDCURSOR)) return;
+    SendMessage(liveWindow, WM_USER_MAGNIFY_CURSOR, FALSE, 0);
+}
+
+BOOL HideLiveZoomWindow(HWND liveWindow) noexcept {
+    PrepareLiveZoomCursorRelease(liveWindow);
+    return ShowWindow(liveWindow, SW_HIDE);
+}
+
+BOOL DestroyLiveZoomWindow(HWND liveWindow) noexcept {
+    PrepareLiveZoomCursorRelease(liveWindow);
+    return DestroyWindow(liveWindow);
+}
+
 void ValidateSettings() noexcept {
     constexpr DWORD legacyPercent[]{125, 150, 175, 200, 300, 400};
     if (!g_InitialZoomPercent) {
@@ -2592,7 +2614,7 @@ LRESULT APIENTRY MainWndProcImpl(
         g_LiveZoomWheel.SetTarget(nullptr,0,0);
         timers.StopAll();
         endSuspension();
-        if (IsWindow(g_hWndLiveZoom)) DestroyWindow(g_hWndLiveZoom);
+        if (IsWindow(g_hWndLiveZoom)) DestroyLiveZoomWindow(g_hWndLiveZoom);
         EnableDisableStickyKeys(TRUE); EnableDisableScreenSaver(TRUE);
         ClipCursor(nullptr);
         if (GetCapture() == hWnd) ReleaseCapture();
@@ -3457,7 +3479,7 @@ LRESULT APIENTRY MainWndProcImpl(
 
                             OutputDebug(L"Calling ShowMainWindow 2\n");
 
-                            ShowWindow( g_hWndLiveZoom, SW_HIDE );
+                            HideLiveZoomWindow(g_hWndLiveZoom);
                         }
 
                     } else if( lParam != 0 && lParam != LIVE_DRAW_ZOOM ) {
@@ -5234,7 +5256,7 @@ LRESULT APIENTRY MainWndProcImpl(
         if (g_TimerActive) EnableDisableScreenSaver(TRUE);
         EnableDisableStickyKeys(TRUE);
         ClipCursor(nullptr);
-        if (IsWindow(g_hWndLiveZoom)) DestroyWindow(g_hWndLiveZoom);
+        if (IsWindow(g_hWndLiveZoom)) DestroyLiveZoomWindow(g_hWndLiveZoom);
         if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
         SetCursor(LoadCursor(nullptr, IDC_ARROW));
         releaseSession();
@@ -5447,6 +5469,14 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             RegisterHotKey( hWnd, 0, MOD_CONTROL, VK_UP );
             RegisterHotKey( hWnd, 1, MOD_CONTROL, VK_DOWN );
 
+            // A cached control relinquished its cursor before the previous hide.
+            // Reacquire it for this live session; Draw can suppress it afterward.
+            if (!g_fullScreenWorkaround &&
+                !(GetWindowLong(g_hWndLiveZoomMag, GWL_STYLE) & MS_SHOWMAGNIFIEDCURSOR)) {
+                SendMessage(hWnd, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
+                if (resetQueued || !IsWindow(hWnd)) return 0;
+            }
+
             // Hide hardware cursor
             if( !g_fullScreenWorkaround )
                 if( pMagShowSystemCursor ) pMagShowSystemCursor( FALSE );
@@ -5461,6 +5491,8 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             ShowZoomIndicator(zoomTelescopeTarget,hWnd,true);
         
         } else {
+            // Fallback for a hide requested outside our explicit transition helpers.
+            PrepareLiveZoomCursorRelease(hWnd);
             g_ZoomIndicator.Hide();
             g_LiveZoomWheel.SetTarget(nullptr,0,0);
             active = false;
@@ -5477,7 +5509,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                 timers.Start(hWnd, 1, LIVEZOOM_WINDOW_TIMEOUT);
             } else {
 
-                DestroyWindow( hWnd );
+                DestroyLiveZoomWindow(hWnd);
                 return 0;
             }
             UnregisterHotKey( hWnd, 0 );
@@ -5666,11 +5698,11 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
 
                 if( g_OsVersion < WIN7_VERSION ) {
 
-                    ShowWindow( hWnd, SW_HIDE );
+                    HideLiveZoomWindow(hWnd);
 
                 } else {
 
-                    DestroyWindow( hWnd );
+                    DestroyLiveZoomWindow(hWnd);
                     return 0;
                 }
             }
@@ -5687,7 +5719,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                 // time to exit
                 if( !IsPresentationMode()) {
 
-                    DestroyWindow( hWnd );
+                    DestroyLiveZoomWindow(hWnd);
                     return 0;
                 }
             } 
@@ -5702,7 +5734,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             if( startedInPresentationMode && !IsPresentationMode()) {
 
                 // Existing presentation mode
-                DestroyWindow( hWnd );
+                DestroyLiveZoomWindow(hWnd);
             
             } else if( !startedInPresentationMode && IsPresentationMode()) {
         
@@ -5724,7 +5756,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             SendMessage(hWnd, WM_USER_SESSION_TICK, 0, 0);
             ShowZoomIndicator(zoomTelescopeTarget,hWnd,true);
         } else if (!g_AnimateLiveZoom || !dwmEnabled || zoomLevel <= 1) {
-            DestroyWindow(hWnd);
+            DestroyLiveZoomWindow(hWnd);
         } else {
             resumeZoom = zoomTelescopeTarget;
             exiting = true;
@@ -5771,6 +5803,9 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         }
         break;
     case WM_DESTROY:
+        // The normal paths release before DestroyWindow hides the parent.
+        // Keep this idempotent fallback for externally initiated destruction.
+        PrepareLiveZoomCursorRelease(hWnd);
         g_ZoomIndicator.Hide();
         g_LiveZoomWheel.SetTarget(nullptr,0,0);
         active = false;
@@ -5814,7 +5849,10 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                 if (pMagShowSystemCursor) pMagShowSystemCursor(wParam != FALSE);
                 break;
             }
-            auto style = GetWindowLong( g_hWndLiveZoomMag, GWL_STYLE );
+            const HWND magnifier = g_hWndLiveZoomMag;
+            if (GetParent(magnifier) != hWnd ||
+                GetWindowThreadProcessId(magnifier, nullptr) != GetCurrentThreadId()) return 0;
+            auto style = GetWindowLong(magnifier, GWL_STYLE);
             if( wParam == TRUE )
             {
                 style |= MS_SHOWMAGNIFIEDCURSOR;
@@ -5823,9 +5861,12 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             {
                 style &= ~MS_SHOWMAGNIFIEDCURSOR;
             }
-            SetWindowLong( g_hWndLiveZoomMag, GWL_STYLE, style );
-            InvalidateRect( g_hWndLiveZoomMag, nullptr, TRUE );
-            RedrawWindow( hWnd, nullptr, nullptr, RDW_ALLCHILDREN | RDW_UPDATENOW );
+            SetLastError(ERROR_SUCCESS);
+            if (!SetWindowLong(magnifier, GWL_STYLE, style) && GetLastError() != ERROR_SUCCESS) {
+                graphicsFailure(L"Cursore ingrandito LiveZoom"); return 0;
+            }
+            InvalidateRect(magnifier, nullptr, TRUE);
+            RedrawWindow(hWnd, nullptr, nullptr, RDW_ALLCHILDREN | RDW_UPDATENOW);
         }
         break;
 

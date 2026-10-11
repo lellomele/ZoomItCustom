@@ -2603,6 +2603,8 @@ LRESULT APIENTRY MainWndProcImpl(
     static HPEN		hDrawingPen;
     static HFONT	hTimerFont;
     static HFONT	hNegativeTimerFont;
+    static HFONT    hTimerVersionFont;
+    static UINT     timerVersionDpi;
 
     static MONITORINFO	monInfo;
     static MONITORINFO  lastMonInfo;
@@ -2662,6 +2664,7 @@ LRESULT APIENTRY MainWndProcImpl(
 
         DeleteObject(hTimerFont); hTimerFont = nullptr;
         DeleteObject(hNegativeTimerFont); hNegativeTimerFont = nullptr;
+        DeleteObject(hTimerVersionFont); hTimerVersionFont = nullptr; timerVersionDpi = 0;
     };
 
     const auto resetToIdle = [&]() {
@@ -5347,6 +5350,28 @@ LRESULT APIENTRY MainWndProcImpl(
                     DT_NOCLIP|DT_LEFT|DT_NOPREFIX );
                 SelectObject( hdcScreenCompat, prevFont );
             }
+
+            // Keep the small version label in the existing timer bitmap.
+            const UINT versionDpi = GetDpiForWindowHelper(hWnd);
+            if (!hTimerVersionFont || timerVersionDpi != versionDpi) {
+                const HFONT font = CreateFontW(-ScaleForDpi(12, versionDpi), 0, 0, 0,
+                    FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                    CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+                if (font) {
+                    DeleteObject(hTimerVersionFont);
+                    hTimerVersionFont = font;
+                    timerVersionDpi = versionDpi;
+                }
+            }
+            const int versionMargin = ScaleForDpi(12, versionDpi);
+            RECT versionRect{versionMargin, versionMargin, width - versionMargin, height - versionMargin};
+            const HFONT previousVersionFont = static_cast<HFONT>(SelectObject(hdcScreenCompat,
+                hTimerVersionFont ? hTimerVersionFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT))));
+            const COLORREF previousVersionColor = SetTextColor(hdcScreenCompat, RGB(112, 112, 112));
+            DrawTextW(hdcScreenCompat, L"ZoomIt Custom \u00b7 v" _T(FILE_VERSION_STRING), -1,
+                &versionRect, DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_NOPREFIX);
+            SetTextColor(hdcScreenCompat, previousVersionColor);
+            SelectObject(hdcScreenCompat, previousVersionFont);
 
             // Copy to screen
             BitBlt( ps.hdc, 0, 0, width, height, hdcScreenCompat, 0, 0, SRCCOPY|CAPTUREBLT  );

@@ -98,9 +98,35 @@ NativeResult Run(const fs::path& binaries,const fs::path& root,const wchar_t* sc
              <<" outcome="<<result.output<<std::flush;
     return result;
 }
+static void CheckProcessExit() {
+    struct Case { DWORD firstWait, killError, lastWait, expected; unsigned kills; };
+    constexpr Case cases[] = {
+        {WAIT_OBJECT_0,0,0,ERROR_SUCCESS,0}, {WAIT_FAILED,0,0,ERROR_INVALID_HANDLE,0},
+        {WAIT_TIMEOUT,0,WAIT_OBJECT_0,ERROR_SUCCESS,1}, {WAIT_TIMEOUT,0,WAIT_TIMEOUT,ERROR_TIMEOUT,1},
+        {WAIT_TIMEOUT,ERROR_ACCESS_DENIED,WAIT_OBJECT_0,ERROR_SUCCESS,1},
+        {WAIT_TIMEOUT,ERROR_ACCESS_DENIED,WAIT_TIMEOUT,ERROR_ACCESS_DENIED,1},
+        {WAIT_TIMEOUT,0,WAIT_FAILED,ERROR_INVALID_HANDLE,1}
+    };
+    for (const auto& test : cases) {
+        unsigned waits=0,kills=0;bool bounded=true;
+        auto wait=[&](HANDLE,DWORD timeout) {
+            bounded &= timeout==(waits==0 ? 3000u : 1000u);
+            const DWORD result=waits++==0 ? test.firstWait : test.lastWait;
+            if(result==WAIT_FAILED)SetLastError(ERROR_INVALID_HANDLE);
+            return result;
+        };
+        auto terminate=[&](HANDLE,DWORD) {
+            ++kills;SetLastError(test.killError);return test.killError==ERROR_SUCCESS;
+        };
+        Require(recovery::ConfirmProcessExit(nullptr,1,wait,terminate)==test.expected &&
+            bounded && kills==test.kills && waits==kills+1,"Supervisor requires confirmed exit before restarting");
+    }
+}
+
 int main(int argc,char** argv){
     const bool checkpointOnly=argc==2&&strcmp(argv[1],"--checkpoint-only")==0;
     try{
+        CheckProcessExit();
         wchar_t executable[MAX_PATH];GetModuleFileNameW(nullptr,executable,MAX_PATH);
         const fs::path binaries=fs::path(executable).parent_path();
         const fs::path root=binaries/(L"recovery-results-"+std::to_wstring(GetCurrentProcessId()));
@@ -193,6 +219,40 @@ int main(int argc,char** argv){
             Require(GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)==beforeGdi,"Failure paths release every GDI handle");
         }
         {
+            const auto folder=root/L"canvas-generation";fs::create_directories(folder);
+            Environment logs(L"ZOOMIT_TEST_LOG_DIRECTORY",folder.c_str());
+            MapFixture fixture;recovery::Client client;
+            Require(client.Initialize(fixture.token),"Attach canvas generation client");
+            Bitmap source(64,64),destination(64,64);
+            recovery::State draw{};draw.mode=recovery::Mode::Draw;draw.monitor={0,0,64,64};
+            client.SetSession(1);
+            SetPixel(source.dc,32,48,RGB(21,91,201));
+            client.Commit(draw,source.dc,nullptr,nullptr,true);
+            recovery::State first{};
+            Require(recovery::Latest(*fixture.shared,first)&&first.canvasSequence,"First drawing captured");
+            client.Commit(recovery::State{});
+            client.SetSession(2);
+            SetPixel(source.dc,32,48,RGB(201,91,21));
+            client.FailNext(recovery::TestFailure::Capture);
+            client.Commit(draw,source.dc,nullptr,nullptr,true);
+            client.Commit(draw);
+            client.PrepareRecoveryForTest();
+            recovery::State recovered{};
+            Require(client.TakeRecovery(recovered)&&recovered.mode==recovery::Mode::Idle&&
+                !client.RestoreCanvas(first,destination.dc),"New session cannot recover a previous drawing");
+            client.FinishRecovery();
+            client.Commit(draw,source.dc,nullptr,nullptr,true);
+            client.PrepareRecoveryForTest();
+            Require(client.TakeRecovery(recovered)&&recovered.canvasSequence>first.canvasSequence&&
+                client.RestoreCanvas(recovered,destination.dc)&&GetPixel(destination.dc,32,48)==RGB(201,91,21),
+                "New canvas recovers after a transient first capture failure");
+            client.FinishRecovery();
+            fixture.pixels[static_cast<size_t>(recovered.canvasSlot)*recovery::CanvasCapacity]^=1;
+            client.PrepareRecoveryForTest();
+            Require(!client.TakeRecovery(recovered)||recovered.mode==recovery::Mode::Idle,
+                "Corrupt first canvas cannot revive a fallback from a previous session");
+        }
+        {
             const auto folder=root/L"unrecoverable-size";fs::create_directories(folder);
             Environment failureLogs(L"ZOOMIT_TEST_LOG_DIRECTORY",folder.c_str());MapFixture fixture;recovery::Client client;
             Require(client.Initialize(fixture.token),"Attach oversize checkpoint client");Bitmap smallImage(64,64);
@@ -229,6 +289,9 @@ int main(int argc,char** argv){
         }
         auto normal=Run(binaries,root,L"normal");
         Require(normal.exit==0&&normal.reports==0&&normal.dumps==0&&normal.output=="boot\nnormal\n","Voluntary exit has no restart and no log");
+        auto teardown=Run(binaries,root,L"teardown-failure");
+        Require(teardown.exit!=0&&teardown.reports==1&&teardown.output=="boot\nclosing\n",
+            "Abnormal termination after exit was requested is reported without restarting");
         auto serious=Run(binaries,root,L"serious");
         Require(serious.exit==0&&serious.reports==1&&serious.dumps==0,"Serious error only creates report");
         auto allocation=Run(binaries,root,L"allocation");
@@ -268,7 +331,7 @@ int main(int argc,char** argv){
         Require(loop.exit==1&&loop.output=="boot\ncrash\nboot\ncrash\nboot\ncrash\n"&&loop.reports==3,"Crash loop stops after two retries");
         auto standalone=Run(binaries,root,L"standalone",false);
         Require(standalone.exit!=0&&standalone.reports==1&&standalone.output=="boot\ncrash\n","Standalone crash logs without restarting");
-        std::cout<<"{\"recovery_passed\":true,\"native_cases\":23,\"maximum_restart_case_ms\":"<<maximum
+        std::cout<<"{\"recovery_passed\":true,\"native_cases\":24,\"maximum_restart_case_ms\":"<<maximum
                  <<",\"checkpoint_cycles\":118,\"partial_failure_cases\":"<<failuresTested
                  <<",\"metadata_updates\":10101,\"checkpoint_1080p_ms\":"<<fullHdMs
                  <<",\"checkpoint_4k_ms\":"<<ultraHdMs<<",\"metadata_us\":"<<metadataMs*1000

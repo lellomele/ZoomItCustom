@@ -44,6 +44,9 @@ void RunRecoveryScenario(HWND window){
     Record(L"boot\n");
     if(wcscmp(scenario,L"loop")==0){Record(L"crash\n");RaiseFailFastException(nullptr,nullptr,0);return;}
     if(wcscmp(scenario,L"normal")==0){Record(L"normal\n");PostMessage(window,WM_COMMAND,IDCANCEL,0);return;}
+    if(wcscmp(scenario,L"teardown-failure")==0){
+        recovery::client.NormalExit();Record(L"closing\n");ExitProcess(ERROR_GEN_FAILURE);
+    }
     if(wcscmp(scenario,L"serious")==0){
         recovery::client.Serious(L"Errore grave provocato dalla prova",ERROR_NOT_ENOUGH_MEMORY);
         Record(L"serious-ok\n");PostMessage(window,WM_COMMAND,IDCANCEL,0);return;

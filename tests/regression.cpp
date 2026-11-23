@@ -30,6 +30,44 @@ void ActivateTestHost(HWND host) {
     if(IsWindowVisible(g_hWndLiveZoom)) SetWindowPos(g_hWndLiveZoom,HWND_TOPMOST,0,0,0,0,positionFlags);
     SetForegroundWindow(canvasVisible ? g_hWndMain : host);
 }
+// Establish real mouse input on an empty, owned window before an interactive
+// sequence. SetCursorPos alone does not switch Windows out of pen/touch mode.
+// Never use this while measuring a transition or stationary exit.
+bool PrepareOwnedMouseHost(HWND host) {
+    constexpr UINT positionFlags=SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE;
+    const bool raiseTemporarily=!(GetWindowLongPtrW(host,GWL_EXSTYLE)&WS_EX_TOPMOST);
+    if(raiseTemporarily && !SetWindowPos(host,HWND_TOPMOST,0,0,0,0,positionFlags))return false;
+    {
+        auto restoreOrder=zoomit::OnExit([&] {
+            if(raiseTemporarily)SetWindowPos(host,HWND_NOTOPMOST,0,0,0,0,positionFlags);
+        });
+        POINT point{120,90};
+        if(!ClientToScreen(host,&point) || !SetCursorPos(point.x,point.y))return false;
+        pump(15);
+        if(WindowFromPoint(point)!=host || GetCapture())return false;
+        for(int key:{VK_LBUTTON,VK_RBUTTON,VK_MBUTTON,VK_XBUTTON1,VK_XBUTTON2})
+            if(GetAsyncKeyState(key)&0x8000)return false;
+        INPUT motion{};
+        motion.type=INPUT_MOUSE;motion.mi.dx=1;motion.mi.dwFlags=MOUSEEVENTF_MOVE;
+        if(SendInput(1,&motion,sizeof(motion))!=1)return false;
+        pump(20);
+        if(GetForegroundWindow()!=host) {
+            POINT target{};
+            if(!GetCursorPos(&target) || WindowFromPoint(target)!=host)return false;
+            INPUT click[2]{};
+            click[0].type=click[1].type=INPUT_MOUSE;
+            click[0].mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
+            click[1].mi.dwFlags=MOUSEEVENTF_LEFTUP;
+            const UINT sent=SendInput(2,click,sizeof(INPUT));
+            if(sent==1)SendInput(1,&click[1],sizeof(INPUT));
+            if(sent!=2)return false;
+            const auto deadline=GetTickCount64()+700;
+            while(GetForegroundWindow()!=host && GetTickCount64()<deadline)pump(5);
+        }
+    }
+    return GetForegroundWindow()==host &&
+        (!raiseTemporarily || !(GetWindowLongPtrW(host,GWL_EXSTYLE)&WS_EX_TOPMOST));
+}
 size_t privateBytes() {
     PROCESS_MEMORY_COUNTERS_EX counters{};
     counters.cb=sizeof(counters);
@@ -970,6 +1008,12 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
     const HDC undoCanvas=reinterpret_cast<HDC>(SendMessage(g_hWndMain,WM_TEST_QUERY_CANVAS,0,0));
     const COLORREF beforeStroke=GetPixel(undoCanvas,345,340);
     stroke(true);require(GetPixel(undoCanvas,345,340)==COLOR_RED,"Undo fixture must contain a real annotation stroke");
+    zoomit::runtime::FailAt(zoomit::runtime::Api::Capture,1);
+    const auto deniedStroke=SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(400,360));
+    zoomit::runtime::Clear();
+    SendMessage(g_hWndMain,WM_CANCELMODE,0,0);
+    require(!deniedStroke && !(mode()&4) && GetPixel(undoCanvas,345,340)==COLOR_RED,
+            "Failed snapshot followed by capture loss must preserve the prior stroke");
     snip(0);
     BYTE keyboard[256]{},pressedKeyboard[256]{};
     require(GetKeyboardState(keyboard)!=FALSE,"Snapshot keyboard state for native Undo test");
@@ -980,7 +1024,20 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
     require(GetPixel(undoCanvas,345,340)==beforeStroke,"First Undo after Snip must remove the real preceding stroke");
     ++results.snipCases;clean();
 
-    clean();press(BREAK_HOTKEY);pump(30);require((mode()&32)!=0,"External Pause shortcut must start the timer");
+    press(DRAW_HOTKEY);pump(20);
+    SendMessage(g_hWndMain,WM_LBUTTONDOWN,0,MAKELPARAM(32,32));
+    SendMessage(g_hWndMain,WM_LBUTTONUP,0,MAKELPARAM(0,0));
+    require((mode()&7)==3,"Releasing at the canvas origin must finish the stroke");
+    clean();
+    {
+        const auto oldFileSetting=g_BreakShowBackgroundFile,oldDesktop=g_BreakShowDesktop;
+        const std::wstring oldFile=g_BreakBackgroundFile;
+        auto restore=zoomit::OnExit([&]{g_BreakShowBackgroundFile=oldFileSetting;g_BreakShowDesktop=oldDesktop;
+                                        wcscpy_s(g_BreakBackgroundFile,oldFile.c_str());});
+        g_BreakShowBackgroundFile=TRUE;g_BreakShowDesktop=FALSE;wcscpy_s(g_BreakBackgroundFile,L".");
+        press(BREAK_HOTKEY);pump(30);
+        require((mode()&33)==32,"Missing timer artwork must use the solid background and stay in Break");
+    }
     for(WPARAM action:{WPARAM(ZOOM_HOTKEY),WPARAM(LIVE_HOTKEY),WPARAM(DRAW_HOTKEY),
                        WPARAM(LIVE_DRAW_HOTKEY),WPARAM(SNIP_HOTKEY),WPARAM(SNIP_SAVE_HOTKEY)}) ignore(action);
     press(BREAK_HOTKEY);require((mode()&32)!=0,"Own Pause shortcut must restart and retain the active timer");++results.states;
@@ -1245,6 +1302,14 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
             same(sameLayout,"A DPI notification with unchanged logical geometry must not discard annotations");++results.topologyCases;
             g_TestChangedMonitorGeometry=true;
             SendMessage(g_hWndMain,WM_DISPLAYCHANGE,32,0);
+            if (action == LIVE_HOTKEY) {
+                const auto until = GetTickCount64() + 4000;
+                while (g_VideoRepairPending && GetTickCount64() < until) pump(20);
+                LiveViewport updated{};
+                require(!g_VideoRepairPending && SendMessage(g_hWndLiveZoom,WM_USER_GET_LIVE_VIEWPORT,0,reinterpret_cast<LPARAM>(&updated)) &&
+                        updated.factor == sameLayout.liveLevel, "A monitor resize must rebuild plain LiveZoom at its previous magnification");
+                clean();
+            }
             g_TestChangedMonitorGeometry=false;
             require(mode()==0 && !IsWindowVisible(g_hWndMain) && !IsWindow(g_hWndLiveZoom) && GetCapture()!=g_hWndMain,
                     "Obsolete display geometry must synchronously release drawing, magnification and capture");
@@ -1265,12 +1330,23 @@ ModePolicyResults RunModePolicyRegression(HWND host) {
     {
         using zoomit::runtime::Api;
         auto clearFailures=zoomit::OnExit([]{zoomit::runtime::Clear();});
+        clean();press(LIVE_HOTKEY);pump(30);
+        SendMessage(g_hWndLiveZoom,WM_USER_FINISH_LIVE_ZOOM_ANIMATION,0,0);
+        {
+            const auto previousFailure=g_FailedLiveGeneration;
+            const auto restoreFailure=zoomit::OnExit([&]{g_FailedLiveGeneration=previousFailure;});
+            g_FailedLiveGeneration=g_LiveSessionGeneration;
+            zoomit::runtime::Clear();
+            SendMessage(g_hWndMain,WM_HOTKEY,SNIP_HOTKEY,0);
+            require(zoomit::runtime::Calls(Api::Cursor)==0 && !g_TestSnipBitmap && mode()==0,
+                    "Snip must stop before preparing a capture if the live viewport is unavailable");
+        }
         clean();const DWORD directGdi=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
         for(unsigned stage=1;stage<=zoomit::GraphicsSession::PreparationChecks;++stage) {
             zoomit::runtime::FailAt(Api::Graphics,stage);
             {
                 zoomit::GraphicsSession candidate;
-                require(!candidate.Prepare({0,0,192,128},5,COLOR_RED),"Every injected graphics preparation stage must fail deterministically");
+                require(!(candidate.Allocate({0,0,192,128},5,COLOR_RED) && candidate.Capture()),"Every injected graphics preparation stage must fail deterministically");
                 require(zoomit::runtime::Calls(Api::Graphics)==stage,"The requested partial preparation failure must actually be reached");
             }
             zoomit::runtime::Clear();
@@ -1377,6 +1453,7 @@ void PrintModePolicyResults(const ModePolicyResults& result) {
 #include "selection.h"
 #include "multimonitor.h"
 #include "native_stationary_cursor.h"
+#include "video_recovery_native.h"
 #include "whiteboard.h"
 
 int main(int argc, char** argv) {
@@ -1442,8 +1519,17 @@ int main(int argc, char** argv) {
         g_SliderZoomLevel=0xffffffff; g_InitialZoomPercent=0xffffffff; g_RootPenWidth=0xffffffff;
         g_BreakTimeout=0xffffffff; g_BreakTimerPosition=0xffffffff;
         ValidateSettings();
-        require(g_SliderZoomLevel==3 && g_RootPenWidth==19 &&
+        require(g_SliderZoomLevel==3 && g_RootPenWidth==MAX_PEN_WIDTH &&
                 g_BreakTimeout==99 && g_BreakTimerPosition==8,"Corrupt settings must be clamped");
+        g_RootPenWidth=27;ValidateSettings();
+        require(g_RootPenWidth==27,"Valid wide pen survives loading its saved settings");
+        const auto minimumPen=ResizedPen({6,1},5,4.0f,true);
+        require(minimumPen.screen==2 && minimumPen.base==1,"Minimum pen at 4x remains recoverable");
+        const auto fractionalPen=ResizedPen({5,5},6,1.25f,false);
+        require(fractionalPen.screen==6 && fractionalPen.base==5,"Automatic fractional zoom preserves the base width");
+        const auto cappedPen=ResizedPen({40,40},600,32.0f,false);
+        require(cappedPen.screen==MAX_LIVE_PEN_WIDTH && cappedPen.base==40,
+                "Automatic display cap preserves a wide pen preference");
         g_SliderZoomLevel=0; g_RootPenWidth=5; g_BreakTimeout=10;
         {
             const std::wstring key = L"Software\\ZoomItCustom\\Regression_" + std::to_wstring(GetCurrentProcessId());
@@ -1550,6 +1636,7 @@ int main(int argc, char** argv) {
         pDwmIsCompositionEnabled=reinterpret_cast<type_pDwmIsCompositionEnabled>(GetProcAddress(LoadLibrary(L"dwmapi.dll"), "DwmIsCompositionEnabled"));
         g_OsVersion=WIN10_VERSION;
         require(MagInitialize()!=FALSE,"Magnification API initialization");
+        g_MagnificationReady=true;
         nativeUiInitialized=true;
         g_hWndMain=InitInstance(GetModuleHandle(nullptr),SW_HIDE);
         require(g_hWndMain!=nullptr,"Main window creation");
@@ -1572,6 +1659,16 @@ int main(int argc, char** argv) {
         ShowWindow(host,SW_SHOW);
         ActivateTestHost(host);
         SetCursorPos(125,125);
+        const bool videoRecoveryOnly=argc>1 && strcmp(argv[1],"--video-recovery-only")==0;
+        if(argc==1 || videoRecoveryOnly)
+            require(PrepareOwnedMouseHost(host),"Establish mouse input on the owned regression host");
+        if(videoRecoveryOnly) {
+            RunVideoRecoveryRegression(host);
+            DestroyWindow(g_hWndMain);DestroyWindow(host);
+            if(g_MagnificationReady)MagUninitialize();
+            SetCursorPos(oldCursor.x,oldCursor.y);isolatedRegistry->VerifyUntouched();
+            return 0;
+        }
         if(whiteboardOnly) {
             const auto result=RunWhiteboardRegression(host);
             DestroyWindow(g_hWndMain);DestroyWindow(host);MagUninitialize();SetCursorPos(oldCursor.x,oldCursor.y);
@@ -1781,6 +1878,7 @@ int main(int argc, char** argv) {
         for(int variant=0;variant<7;++variant) {
             ringVariant=variant;ringContext="suspension variants";
             ++suspensionCases;
+            require(PrepareOwnedMouseHost(host),"Establish the idle mouse baseline before each draw variant");
             g_AnimateZoom=FALSE;g_fullScreenWorkaround=variant==3 || variant==5;
             g_DrawPointer=variant==6;
             g_PenColor=COLOR_RED|0xff000000;g_RootPenWidth=5;g_PenWidth=5;

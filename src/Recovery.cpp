@@ -160,7 +160,7 @@ bool WriteReport(const Diagnostics& diagnostic,const Crash* crash,HANDLE process
     if(!complete){DeleteFileW(path);if(auto ext=wcsrchr(path,L'.')){wcscpy_s(ext,5,L".dmp");DeleteFileW(path);}return false;}
     PruneReports(folder);return true;
 }
-void RestoreSystem(SystemState& state) noexcept {
+void RestoreSystemSettings(SystemState& state) noexcept {
     if(state.stickyChanged&&SystemParametersInfoW(SPI_SETSTICKYKEYS,sizeof(STICKYKEYS),&state.sticky,SPIF_SENDCHANGE))
         InterlockedExchange(&state.stickyChanged,0);
     if(state.saverChanged&&SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE,state.saver,nullptr,0))
@@ -168,6 +168,9 @@ void RestoreSystem(SystemState& state) noexcept {
     if(state.displayChanged&&state.displayName[0]&&
         ChangeDisplaySettingsExW(state.displayName,&state.display,nullptr,0,nullptr)==DISP_CHANGE_SUCCESSFUL)
         InterlockedExchange(&state.displayChanged,0);
+}
+void RestoreSystem(SystemState& state) noexcept {
+    RestoreSystemSettings(state);
     ClipCursor(nullptr);
     if(MagInitialize()){
         MagSetFullscreenTransform(1,0,0);MagSetInputTransform(FALSE,nullptr,nullptr);MagShowSystemCursor(TRUE);MagUninitialize();
@@ -271,6 +274,23 @@ LONG Client::Fault(EXCEPTION_POINTERS* pointers)noexcept{
     return EXCEPTION_EXECUTE_HANDLER;
 }
 void Client::NormalExit()noexcept{if(shared_&&attached_)InterlockedExchange(&shared_->normalExit,1);}
+void Client::SetSession(uint64_t session) noexcept {
+    if(session==checkpointSession_)return;
+    checkpointSession_=session;
+    checkpointFailures_=0;
+    if(!attached_ || recovering_)return;
+
+    // The released surface can have the same dimensions as an unrelated new
+    // drawing. Neither its rolling metadata nor its fallback frames belong to
+    // this session. Keep the slot rotation and the monotonically increasing IDs.
+    for(State& state:shared_->states)
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&state.sequence),0);
+    for(CanvasCheckpoint& frame:shared_->canvases){
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&frame.state.sequence),0);
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&frame.image.sequence),0);
+    }
+    canvasSequence_=canvasWidth_=canvasHeight_=0;
+}
 void Client::CheckpointFailure(DWORD condition,const wchar_t* operation,DWORD error)noexcept{
     if(checkpointFailures_&condition)return;
     checkpointFailures_|=condition;Serious(operation,error);

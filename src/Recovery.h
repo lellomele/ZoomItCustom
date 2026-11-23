@@ -32,6 +32,7 @@ struct Crash {
 };
 struct Shared {
     DWORD magic{},version{},supervisor{};
+    // An explicit exit request suppresses a restart even if teardown itself crashes.
     volatile LONG normalExit{},crashReported{},ready{};
     State states[2]{}; CanvasCheckpoint canvases[2]{};
     SystemState system{}; Diagnostics diagnostic{}; Crash crash{};
@@ -43,7 +44,23 @@ bool Latest(const Shared&,State&) noexcept;
 bool ValidToken(const wchar_t*) noexcept;
 void ObjectName(wchar_t*,size_t,const wchar_t*,const wchar_t*) noexcept;
 bool WriteReport(const Diagnostics&,const Crash*,HANDLE,const wchar_t*,const wchar_t* directory=nullptr) noexcept;
+void RestoreSystemSettings(SystemState&) noexcept;
 void RestoreSystem(SystemState&) noexcept;
+// TerminateProcess requests termination asynchronously. Reusing shared recovery
+// state is safe only after the process handle itself has become signalled.
+template<class Wait = decltype(&WaitForSingleObject), class Terminate = decltype(&TerminateProcess)>
+DWORD ConfirmProcessExit(HANDLE process, DWORD exitCode, Wait wait = &WaitForSingleObject,
+                         Terminate terminate = &TerminateProcess) noexcept {
+    DWORD result = wait(process, 3000);
+    if (result == WAIT_OBJECT_0) return ERROR_SUCCESS;
+    if (result != WAIT_TIMEOUT) return result == WAIT_FAILED ? GetLastError() : ERROR_GEN_FAILURE;
+
+    const DWORD terminateError = terminate(process, exitCode) ? ERROR_SUCCESS : GetLastError();
+    result = wait(process, 1000);
+    if (result == WAIT_OBJECT_0) return ERROR_SUCCESS; // May have exited just before TerminateProcess.
+    if (result == WAIT_FAILED) return GetLastError();
+    return terminateError ? terminateError : ERROR_TIMEOUT;
+}
 #if defined(ZOOMIT_RECOVERY_TESTING) || defined(ZOOMIT_TESTING)
 enum class TestFailure { None, Allocation, CreateDC, CreateBitmap, SelectBitmap, Capture, Patch, Flush, Publication };
 struct TestStatistics { uint64_t canvasCopies{},hashedBytes{},metadataCommits{}; };
@@ -75,9 +92,7 @@ public:
     LONG Fault(EXCEPTION_POINTERS*)noexcept;
     void NormalExit()noexcept;
     SystemState& System()noexcept {return shared_?shared_->system:system_;}
-    void SetSession(uint64_t session)noexcept {
-        if(session!=checkpointSession_){checkpointSession_=session;checkpointFailures_=0;}
-    }
+    void SetSession(uint64_t session)noexcept;
     void Commit(State,HDC canvas=nullptr,HDC cursorPatch=nullptr,const RECT* cursorRect=nullptr,bool copyCanvas=false)noexcept;
     bool RestoreCanvas(const State&,HDC)noexcept;
 #if defined(ZOOMIT_RECOVERY_TESTING) || defined(ZOOMIT_TESTING)

@@ -16,6 +16,9 @@ template<class F> ScopeExit<F> OnExit(F function){return ScopeExit<F>(std::move(
 
 // A new session is published only after all allocations, selections and captures succeed.
 struct GraphicsSession {
+private:
+    RECT captureArea_{};
+public:
     HDC screen{},canvas{},saved{},cursor{};
     HBITMAP image{},background{},pointer{};
     HPEN pen{};
@@ -30,8 +33,9 @@ struct GraphicsSession {
         for(HGDIOBJ object:{static_cast<HGDIOBJ>(image),static_cast<HGDIOBJ>(background),
                           static_cast<HGDIOBJ>(pointer),static_cast<HGDIOBJ>(pen)})if(object)DeleteObject(object);
         image=background=pointer=nullptr;pen=nullptr;
+        captureArea_={};
     }
-    bool Prepare(RECT monitor,DWORD penWidth,COLORREF color)noexcept{
+    bool Allocate(RECT monitor,DWORD penWidth,COLORREF color)noexcept{
         Reset();
         const int64_t w=static_cast<int64_t>(monitor.right)-monitor.left,h=static_cast<int64_t>(monitor.bottom)-monitor.top;
         if(w<=0||h<=0||w>32768||h>32768||static_cast<uint64_t>(w)*h*4>512ull*1024*1024)return false;
@@ -52,9 +56,18 @@ struct GraphicsSession {
             if(!runtime::Permit(runtime::Api::Graphics))return false;
             const auto old=SelectObject(dc,object);return old && old!=HGDI_ERROR;
         };
-        return selected(canvas,image)&&selected(saved,background)&&selected(cursor,pointer)&&
-            permit()&&BitBlt(canvas,0,0,static_cast<int>(w),static_cast<int>(h),screen,monitor.left,monitor.top,SRCCOPY|CAPTUREBLT)&&
-            permit()&&BitBlt(saved,0,0,static_cast<int>(w),static_cast<int>(h),screen,monitor.left,monitor.top,SRCCOPY|CAPTUREBLT);
+        if (!selected(canvas,image) || !selected(saved,background) || !selected(cursor,pointer)) return false;
+        captureArea_=monitor;
+        return true;
+    }
+    // Freeze the desktop once. Erase must recover exactly the pixels the user saw.
+    template<class Blit = decltype(&BitBlt)>
+    bool Capture(Blit blit = &BitBlt) const noexcept {
+        const int width=captureArea_.right-captureArea_.left;
+        const int height=captureArea_.bottom-captureArea_.top;
+        return width>0 && height>0 && runtime::Permit(runtime::Api::Graphics) &&
+            blit(canvas,0,0,width,height,screen,captureArea_.left,captureArea_.top,SRCCOPY|CAPTUREBLT) &&
+            runtime::Permit(runtime::Api::Graphics) && blit(saved,0,0,width,height,canvas,0,0,SRCCOPY);
     }
 };
 }

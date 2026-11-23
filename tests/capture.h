@@ -127,6 +127,27 @@ CaptureResults RunCaptureRegression() {
     const auto clear=zoomit::OnExit([]{zoomit::runtime::Clear();});
     require(g_GraphicsInit.Ready(),"Use the application's existing capture codec initialization");
     capture_test::Source source;capture_test::Files files;
+    {
+        zoomit::GraphicsSession session;
+        require(session.Allocate({1,2,4,4},1,RGB(255,0,0)),"Allocate a graphics session before capture");
+        unsigned desktopReads = 0;
+        const auto movingDesktop = [&](HDC dst,int x,int y,int w,int h,HDC src,int sx,int sy,DWORD rop) -> BOOL {
+            if (src == session.screen) {
+                // The next desktop frame is white, unlike the patterned first frame.
+                if (++desktopReads > 1) return PatBlt(dst,x,y,w,h,WHITENESS);
+                src = source.Dc();
+                rop = SRCCOPY;
+            }
+            return BitBlt(dst,x,y,w,h,src,sx,sy,rop);
+        };
+        require(session.Capture(movingDesktop) && desktopReads == 1,"Read a moving desktop only once");
+        for (int y=0;y<2;++y) for (int x=0;x<3;++x) {
+            const COLORREF pixel = capture_test::Source::ColorAt(x+1,y+2);
+            require(GetPixel(session.canvas,x,y)==pixel && GetPixel(session.saved,x,y)==pixel,
+                    "Draw canvas and Erase background must contain the same frozen frame");
+        }
+        ++result.successCases;
+    }
     const auto captureCrop=[&](CapturedBitmap& image) {return image.Capture(source.Dc(),1,2,3,2,3,2);};
     // Warm native capture/codec resources before resource accounting.
     {

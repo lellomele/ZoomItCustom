@@ -326,9 +326,7 @@ int RunNativeStationaryCursorRegression() {
     for(bool animated:{false,true})for(bool edit:{false,true})for(bool escape:{false,true}) {
         require(!IsWindow(g_hWndLiveZoom),"Start a native stationary sequence from idle");
         trace.tracking=false;
-        const auto foregroundDeadline=GetTickCount64()+2500;
-        do {SetForegroundWindow(host.Window());pump(10);}while(GetForegroundWindow()!=host.Window() && GetTickCount64()<foregroundDeadline);
-        if(GetForegroundWindow()!=host.Window()) {
+        if(!PrepareOwnedMouseHost(host.Window())) {
             std::cout<<"{\"inconclusive\":true,\"reason\":\"normal child host could not obtain foreground before entry\",\"visual_verified\":false}\n";return 77;
         }
         const HWND surface=edit ? host.Edit() : host.Window();

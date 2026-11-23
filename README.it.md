@@ -1,118 +1,34 @@
+[Italiano](README.it.md) | [English](README.md)
+
 # ZoomIt Custom
 
-[English](README.md)
+Strumento portatile per ingrandire e annotare lo schermo durante lezioni e presentazioni. La versione Custom privilegia la stabilità del cursore, la rapidità delle operazioni frequenti e un consumo di memoria contenuto.
 
-ZoomIt Custom è un'app portatile per Windows per ingrandire lo schermo, disegnare, mostrare un timer di pausa e catturare ritagli.
+## Primo avvio
 
-La ragione principale di questa versione è che, nell'uso quotidiano del suo autore, ZoomIt originale era diventato «troppo»: troppa memoria occupata, troppe funzionalità, alcune lontane dallo scopo originario, e troppi passaggi per operazioni ricorrenti. A questo si aggiungevano bug storici rimasti nelle versioni successive nonostante le segnalazioni, come la scomparsa del puntatore nei passaggi tra LiveZoom e disegno. ZoomIt Custom vuole riportare l'app agli strumenti essenziali, correggere questi problemi e dare priorità a robustezza, velocità e minore occupazione di memoria.
+Estrai lo [ZIP portatile](https://github.com/lellomele/ZoomItCustom/releases/latest) e tieni insieme i due eseguibili. Avvia **ZoomItCustom.exe** per l’uso normale. Se desideri il riavvio automatico dopo un crash, avvia **ZoomItCustomSupervisor.exe**. Il Supervisor apre l’app e prova a recuperare l’ultimo disegno completato, in pausa. Il tratto in corso e la cronologia di Annulla vanno persi. Dal menu vicino all’orologio puoi chiudere entrambi o configurare l’avvio automatico all’accesso.
 
-Registrazione video/audio, Type e DemoType sono escluse per concentrare l'app su questi strumenti di uso quotidiano.
+## Scorciatoie predefinite
 
-## Per iniziare
-
-Scaricare ed estrarre un [pacchetto portatile dalle release](https://github.com/lellomele/ZoomItCustom/releases) che contenga entrambi gli eseguibili. Se un pacchetto con il supervisore non è ancora disponibile, seguire le istruzioni di compilazione qui sotto. Tenere i due eseguibili nella stessa cartella e chiudere altre istanze di ZoomIt che utilizzano le stesse scorciatoie.
-
-| Cosa vuoi fare | Cosa avviare |
+| Tasti | Azione |
 | --- | --- |
-| Usare l'app con le protezioni interne | ZoomItCustom.exe |
-| Aggiungere il riavvio automatico dopo un crash | ZoomItCustomSupervisor.exe |
+| Ctrl+1 | Congela e ingrandisce lo schermo |
+| Ctrl+2 | LiveZoom. Ctrl+rotellina regola lo zoom ed Esc esce, anche a 1× |
+| Ctrl+3 / Ctrl+Maiusc+3 | Disegna su un’immagine fissa / sul desktop in movimento |
+| Ctrl+4 | Timer per la pausa |
+| Ctrl+5 / Ctrl+Maiusc+5 | Copia una selezione negli appunti / salvala in PNG |
+| Ctrl+6 | Apre o chiude la lavagna. C cambia lo sfondo e Ctrl+rotellina regola la griglia |
 
-Il **supervisore** apre ZoomIt Custom e resta in background. Basta avviare lui, senza aprire separatamente l'app. Se l'app è già aperta da sola, chiuderla prima di avviare il supervisore. Uscire da ZoomIt Custom dal menu dell'icona nell'area di notifica chiude entrambi.
+Le scorciatoie sono configurabili dalle opzioni. In Draw, il clic destro sospende il disegno. Il clic sinistro riprende, un secondo clic destro termina. Sulla lavagna, Esc termina Draw e cancella le annotazioni.
 
-Dopo un crash, il supervisore riavvia l'app e tenta di ripristinare l'ultimo stato valido: modalità, ingrandimento, colore del disegno e annotazioni completate. Il disegno ritorna sospeso; un clic sinistro permette di continuare. Il tratto in corso e la cronologia degli annullamenti non vengono recuperati. Se non è possibile salvare un’immagine per il recupero, può essere ripristinato un disegno completato precedente. Se il ripristino non è possibile, l'app torna al desktop. Un secondo crash entro un minuto provoca un riavvio sul desktop; al terzo si fermano i riavvii automatici.
+## Recupero e requisiti
 
-Avviando direttamente l'app, le protezioni interne restano attive, ma dopo un crash occorre riaprirla manualmente.
+Dopo un reset video, LiveZoom prova a ripristinare ingrandimento e posizione. Un cambiamento della geometria dello schermo può terminare il disegno. Solo crash ed errori gravi generano rapporti in `%LOCALAPPDATA%\ZoomItCustom\Logs` (percorso alternativo `%TEMP%\ZoomItCustom-Logs`).
 
-## Avvio con Windows
+Serve Windows 10 o 11 aggiornato a 64 bit. Gli eseguibili sono privi di firma digitale. Per mostrare il Timer separatamente sul secondo schermo serve il desktop esteso. Il Supervisor può recuperare immagini del disegno fino a 64 MiB ciascuna e interviene quando il processo termina.
 
-Aprire le opzioni dall'icona nell'area di notifica. In **Avvio automatico (all'accesso a Windows)** scegliere:
+## Compilazione e licenza
 
-- **Disattivato**: avvio manuale.
-- **Avvia ZoomIt Custom con Windows**: avvio dell'app senza supervisore.
-- **Avvia ZoomIt Custom con supervisore**: avvio del supervisore, che apre e supervisiona l'app.
+Esegui `.\build.ps1` con Visual Studio 2022 o successivo, strumenti C++, Windows SDK e CMake. Trovi i due eseguibili in `build-Release`.
 
-Confermare con **OK**. La scelta si applica al prossimo accesso a Windows e non cambia la sessione corrente. Le opzioni indicano se la sessione in corso è supervisionata. La scelta con supervisore non è disponibile se il suo eseguibile manca dalla cartella dell'app.
-
-Se si sposta la cartella, riconfermare la scelta per aggiornare il percorso di avvio. Se Windows ha disabilitato l'app nelle impostazioni delle app di avvio, riabilitarla anche lì.
-
-## Uso quotidiano
-
-Le scorciatoie si possono modificare nelle opzioni. LiveDraw usa sempre la scorciatoia Draw configurata, con l'aggiunta di Shift; la combinazione attuale è mostrata nella scheda Draw. Scegliere una scorciatoia Draw senza Shift per mantenere distinte le due azioni.
-
-| Scorciatoia iniziale | Azione |
-| --- | --- |
-| Ctrl+1 | Zoom statico |
-| Ctrl+2 | LiveZoom |
-| Ctrl+3 | Disegno |
-| Ctrl+4 | Pausa con timer |
-| Ctrl+5 | Copia un ritaglio |
-| Ctrl+6 | Lavagna |
-| Ctrl+Shift+3 | LiveDraw (scorciatoia Draw + Shift) |
-| Ctrl+Shift+5 | Salva un ritaglio PNG |
-
-Lo Zoom statico blocca l'immagine ingrandita. LiveZoom la aggiorna in tempo reale; LiveDraw permette di disegnare su questa visualizzazione dal vivo.
-
-Un grande indicatore semitrasparente del fattore di zoom appare nell’angolo inferiore destro del **monitor principale** per circa **1,2 secondi** all’ingresso e dopo ogni variazione. Durante le animazioni mostra il valore finale richiesto. Mantiene dimensioni costanti, lascia passare i clic e scompare prima di disegnare, usare Snip o copiare/salvare. A **1× in LiveZoom**, resta visibile con opacità ridotta per indicare che LiveZoom è ancora attivo. Si nasconde durante disegno, Snip e opzioni, poi riappare se LiveZoom è ancora a 1×. Per disattivarlo, togliere la spunta a **Show zoom factor (Zoom and LiveZoom)** nella scheda **Zoom**.
-
-Ogni modalità ha la propria checkbox **Animate zoom in and zoom out**. In LiveZoom, attivandola, ingresso, uscita e variazioni di ingrandimento diventano graduali; disattivandola sono immediati. L'opzione LiveZoom parte disattivata e viene salvata indipendentemente da quella dello Zoom.
-
-La scheda **Zoom** permette di scegliere l’ingrandimento iniziale di Zoom e LiveZoom; il valore appare accanto al selettore. Da **1,25× a 4×**, i comandi procedono per **passi di 0,25×**. In Zoom usare rotella o Su/Giù; in LiveZoom Ctrl+Su / Ctrl+Giù oppure Ctrl+rotellina quando il disegno non è attivo. Sopra 4× restano i livelli 8×, 16× e 32×. Scendendo sotto 1,25× si torna a 1× e LiveZoom rimane attivo. Ulteriori comandi Ctrl+rotellina o Ctrl+Giù vengono gestiti da LiveZoom a quel valore minimo; per uscire usare **Esc** oppure la sua hotkey (Ctrl+2 per impostazione predefinita). L’ingrandimento iniziale già configurato viene conservato nell’aggiornamento.
-
-In LiveZoom, **Ctrl+Su / Ctrl+Giù** regolano l'ingrandimento. **Ctrl+rotellina** fa lo stesso quando il disegno non è attivo, senza ingrandire anche l'app sottostante. Il comando con la rotellina è disabilitato durante Draw/LiveDraw, anche sospesi, Snip e opzioni. La rotellina senza Ctrl conserva il normale funzionamento. Con rotelline ad alta precisione, i movimenti parziali si accumulano fino a uno scatto completo. **Ctrl+3** avvia Draw su un'immagine bloccata; **Ctrl+Shift+3** avvia LiveDraw mantenendo la visualizzazione dal vivo. **Esc** termina il disegno e torna a LiveZoom. Quando il disegno non è attivo, **Esc** oppure **Ctrl+2** esce da LiveZoom. Il tasto Esc senza modificatori viene intercettato soltanto in LiveZoom attivo; le combinazioni di sistema che contengono Esc mantengono il normale funzionamento.
-
-Le scorciatoie di modalità seguono queste regole, anche durante le animazioni dello zoom:
-
-- Dal desktop si può avviare qualsiasi modalità. Nello Zoom statico, le scorciatoie Draw, LiveDraw, LiveZoom e timer sono ignorate; la scorciatoia Zoom esce dallo Zoom.
-- In LiveZoom senza disegno sono disponibili Draw, LiveDraw e Snip; Zoom e timer sono ignorati.
-- Con Draw o LiveDraw attivi o sospesi, le scorciatoie Zoom, LiveZoom, timer e delle modalità di disegno non cambiano nulla. Per terminare il disegno usare i comandi del mouse o Esc.
-- Nel timer è accettata soltanto la sua scorciatoia di modalità; ripremerla riavvia il conto alla rovescia.
-- Durante selezione Snip, salvataggio o opzioni, le scorciatoie di modalità sono ignorate. I comandi ignorati non vengono accodati per eseguirli in seguito.
-
-In Draw e LiveDraw, **Ctrl+Z** annulla ed **E** cancella le annotazioni. Il primo **clic destro** sospende il disegno e mostra un piccolo cerchio con bordo del colore attivo e interno scuro. Spostare il mouse non aggiunge tratti. Il **clic sinistro** riprende il disegno; un secondo **clic destro** esce. Anche **Esc** termina il disegno. LiveDraw non supporta evidenziatore e sfocatura. Nel timer, Su/Giù e rotella regolano i minuti; Sinistra/Destra regolano dieci secondi ed **Esc** termina la pausa.
-
-Snip funziona sul desktop, nello Zoom statico, in LiveZoom e in Draw, anche con disegno sospeso. Dopo cattura o annullamento conserva annotazioni, ingrandimento e stato del disegno. Con LiveZoom blocca temporaneamente l'immagine e poi ripristina la visualizzazione dal vivo. Snip è ignorato durante un tratto in corso, nel timer o con LiveDraw su LiveZoom; resta disponibile con LiveDraw sul desktop. **Ctrl+Shift+5** salva un PNG seguendo le stesse regole. Nel salvataggio, scegliere **Zoomed PNG** per la dimensione visualizzata oppure **Actual size PNG** per eliminare l'ingrandimento.
-
-## Lavagna
-
-**Ctrl+6** apre o chiude una lavagna a schermo intero sul monitor in cui si trova il puntatore. La scheda **Whiteboard**, prima di About, configura hotkey, sfondo iniziale bianco/nero, tasto locale per alternare lo sfondo (predefinito **C**), dimensione dei quadretti e intensità delle righe.
-
-Fuori da Draw, **C** alterna lo sfondo; **Ctrl+rotellina** e **Ctrl+freccia su / giù** regolano i quadretti a passi di quattro. La dimensione va da 8 a 256 e si adatta al ridimensionamento dello schermo di Windows. L'intensità delle righe va dall'1 al 60%.
-
-La hotkey Draw configurata (**Ctrl+3** predefinita) attiva i consueti strumenti di disegno. Le impostazioni della lavagna restano bloccate mentre Draw è attivo. **Esc termina Draw e rimuove le annotazioni**, tornando alla lavagna modificabile. Ripremere Draw per iniziare un nuovo disegno. Salvare o copiare le annotazioni prima di uscire da Draw se si desidera conservarle.
-
-**Esc sulla lavagna la lascia aperta** e mostra brevemente la hotkey configurata per uscire. Ripremere quella hotkey per chiuderla, anche durante Draw. Le hotkey Zoom, LiveZoom, LiveDraw e Break sono ignorate mentre la lavagna è aperta; Snip rimane disponibile nei casi idonei. Il messaggio di uscita viene nascosto prima di disegnare o acquisire immagini.
-
-Il Supervisor opzionale ripristina anche sfondo e quadretti dopo un crash. Il disegno sulla lavagna segue le regole esistenti di recupero in sospensione. Tenere insieme app e Supervisor dello stesso pacchetto.
-
-## In caso di problemi
-
-Se cambia la disposizione degli schermi o mancano risorse grafiche essenziali, la modalità attiva può terminare per tornare al desktop con il puntatore visibile. Riattivare la modalità per continuare. Se il salvataggio PNG non riesce, un file di destinazione già esistente resta invariato.
-
-I rapporti vengono creati **solo per crash o errori gravi**, mai durante l'uso normale. Per trovarli, incollare questo percorso in Esplora file o nella finestra Esegui di Windows:
-
-    %LOCALAPPDATA%\ZoomItCustom\Logs
-
-Se la cartella non è scrivibile, viene usata **%TEMP%\ZoomItCustom-Logs**. Il rapporto di testo descrive l'operazione e l'errore; può essere accompagnato da un file di diagnostica.
-
-## Requisiti e limiti
-
-- Windows 10 o Windows 11 aggiornati, a 64 bit. Non serve installare separatamente il runtime C++. Gli eseguibili non sono firmati digitalmente.
-- Il consumo di memoria cresce con la risoluzione dello schermo. La cronologia degli annullamenti è limitata per contenerlo. Il recupero supervisionato opzionale può usare fino a 128 MiB per le immagini salvate; le annotazioni non sono recuperabili da immagini più grandi di 64 MiB ciascuna.
-- Il recupero riguarda i crash dell'app, non un'app che resta aperta ma smette di rispondere, né il riavvio o lo spegnimento di Windows.
-- Il timer sul secondo schermo richiede il desktop esteso. Con schermi duplicati resta sul monitor corrente. Un cambio di schermo o il ritorno dalla sospensione può terminare la modalità attiva; riattivarla per continuare.
-- LiveZoom non è disponibile su Windows Server 2022 e sulle build di Windows 11 21H2 precedenti alla revisione 829. Usare una versione aggiornata di Windows.
-- Il funzionamento con monitor a DPI differenti, Desktop remoto, touch e penna non è garantito.
-
-## Compilazione dai sorgenti
-
-Installare Visual Studio 2022 o successivo con strumenti C++, Windows SDK e CMake. Dalla cartella dei sorgenti eseguire:
-
-    .\build.ps1
-
-I due eseguibili vengono creati in **build-Release**.
-
-## Copyright e licenza
-
-Basato sui [sorgenti ZoomIt di Microsoft PowerToys](https://github.com/microsoft/PowerToys/tree/21fd5092b3e062ca6c8dd6b8c772a236f90b3b42/src/modules/ZoomIt/ZoomIt).
-
-Modifiche Custom: copyright © 2026 Prof. ing. Raffaele Mele. Codice originale: Mark Russinovich / Microsoft Corporation. Distribuito con [licenza MIT](LICENSE); conservare la licenza e gli avvisi di copyright nelle redistribuzioni.
+Basato su [Microsoft PowerToys ZoomIt](https://github.com/microsoft/PowerToys/tree/21fd5092b3e062ca6c8dd6b8c772a236f90b3b42/src/modules/ZoomIt/ZoomIt). Codice originale © Mark Russinovich / Microsoft Corporation. Modifiche Custom © 2026 Prof. ing. Raffaele Mele. [Licenza MIT](LICENSE).

@@ -18,6 +18,7 @@
 #include "About.h"
 #include "SuspendedDrawCursor.h"
 #include "Recovery.h"
+#include "VideoRecovery.h"
 #include "GraphicsSession.h"
 #include "RuntimeSafety.h"
 #include "Startup.h"
@@ -70,6 +71,21 @@ constexpr float g_ZoomLevels[] = {
     1.25f, 1.50f, 1.75f, 2.00f, 2.25f, 2.50f,
     2.75f, 3.00f, 3.25f, 3.50f, 3.75f, 4.00f
 };
+
+// A delayed WM_TIMER repaints the current time instead of extending the break.
+int BreakRemaining(ULONGLONG deadline, ULONGLONG now) noexcept {
+    if (deadline > now) {
+        const ULONGLONG milliseconds = deadline - now;
+        return static_cast<int>((std::min)(1 + (milliseconds - 1) / 1000, static_cast<ULONGLONG>(INT_MAX)));
+    }
+    return -static_cast<int>((std::min)((now - deadline) / 1000, static_cast<ULONGLONG>(INT_MAX)));
+}
+
+int AdjustBreakDuration(int seconds, int steps, int interval) noexcept {
+    const LONGLONG current = (std::max)(seconds, 0);
+    const LONGLONG boundary = steps > 0 ? current / interval : (current + interval - 1) / interval;
+    return static_cast<int>(std::clamp<LONGLONG>((boundary + steps) * interval, 0, INT_MAX));
+}
 
 float NextZoomLevel(float current, bool increase) noexcept {
     if (!std::isfinite(current)) current = 2.0f;
@@ -196,7 +212,22 @@ type_pSHQueryUserNotificationState	pSHQueryUserNotificationState;
 std::uint64_t g_LiveSessionGeneration = 0;
 std::uint64_t g_FailedLiveGeneration = 0;
 
+bool g_MagnificationReady{}, g_VideoRepairPending{}, g_RebuildingVideo{};
+bool g_ExcludeLiveCanvas = true;
+BOOL g_SystemCursorWanted = TRUE;
+
+bool EnsureMagnification() noexcept {
+    if (!g_MagnificationReady && pMagInitialize) g_MagnificationReady = pMagInitialize() != FALSE;
+    return g_MagnificationReady;
+}
+void SetSystemPointerVisible(BOOL visible) noexcept {
+    g_SystemCursorWanted = visible;
+    if (g_MagnificationReady && pMagShowSystemCursor) pMagShowSystemCursor(visible);
+}
+
 BOOL SetLiveZoomFilter(HWND canvas,bool excludeCanvas) noexcept {
+    g_ExcludeLiveCanvas = excludeCanvas;
+    if (g_VideoRepairPending && !g_RebuildingVideo) return TRUE;
     if(!pMagSetWindowFilterList || !IsWindow(g_hWndLiveZoomMag))return FALSE;
     HWND excluded[2]{};int count=0;
     if(excludeCanvas && IsWindow(canvas))excluded[count++]=canvas;
@@ -204,7 +235,7 @@ BOOL SetLiveZoomFilter(HWND canvas,bool excludeCanvas) noexcept {
     return zoomit::runtime::Permit(zoomit::runtime::Api::Filter) && pMagSetWindowFilterList(g_hWndLiveZoomMag,MW_FILTERMODE_EXCLUDE,count,count ? excluded : nullptr);
 }
 void ShowZoomIndicator(float factor,HWND context,bool live) noexcept {
-    if(!g_ShowZoomIndicator || g_ZoomIndicator.Failed() || g_IndicatorSuppression || hWndOptions || g_SelectionActive ||
+    if(g_VideoRepairPending || !g_ShowZoomIndicator || g_ZoomIndicator.Failed() || g_IndicatorSuppression || hWndOptions || g_SelectionActive ||
        g_bSaveInProgress || g_ZoomOnLiveZoom ||
        !SendMessage(g_hWndMain,WM_USER_CAN_SHOW_ZOOM_INDICATOR,0,0))return;
     // The legacy fullscreen workaround has no exclusion list. Keep its behaviour intact.
@@ -223,8 +254,18 @@ void ShowZoomIndicator(float factor,HWND context,bool live) noexcept {
 }
 
 void RestoreSystemPointer() noexcept {
-    if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+    SetSystemPointerVisible(TRUE);
     SetCursor(LoadCursor(nullptr, IDC_ARROW));
+}
+
+bool SetMagnifierCursorStyle(HWND magnifier, bool visible) noexcept {
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR style = GetWindowLongPtr(magnifier, GWL_STYLE);
+    if (!style && GetLastError() != ERROR_SUCCESS) return false;
+    const LONG_PTR updated = visible ? style | MS_SHOWMAGNIFIEDCURSOR : style & ~LONG_PTR(MS_SHOWMAGNIFIEDCURSOR);
+    if (updated == style) return true;
+    SetLastError(ERROR_SUCCESS);
+    return SetWindowLongPtr(magnifier, GWL_STYLE, updated) != 0 || GetLastError() == ERROR_SUCCESS;
 }
 
 // Release the control's cursor surface while its own window is still visible.
@@ -236,7 +277,13 @@ void PrepareLiveZoomCursorRelease(HWND liveWindow) noexcept {
         GetWindowThreadProcessId(magnifier, nullptr) != GetCurrentThreadId() ||
         GetParent(magnifier) != liveWindow ||
         !(GetWindowLong(magnifier, GWL_STYLE) & MS_SHOWMAGNIFIEDCURSOR)) return;
-    SendMessage(liveWindow, WM_USER_MAGNIFY_CURSOR, FALSE, 0);
+    if (g_VideoRepairPending) {
+        // An exit can precede the queued detach. Release the actual child now,
+        // without painting the possibly lost device or changing the saved mode.
+        SetMagnifierCursorStyle(magnifier, false);
+    } else {
+        SendMessage(liveWindow, WM_USER_MAGNIFY_CURSOR, FALSE, 0);
+    }
 }
 
 BOOL HideLiveZoomWindow(HWND liveWindow) noexcept {
@@ -266,7 +313,7 @@ void ValidateSettings() noexcept {
     const bool validZoom = g_InitialZoomPercent >= 125 && g_InitialZoomPercent <= 400 &&
         (g_InitialZoomPercent - 125) % 25 == 0;
     SetInitialZoomIndex(validZoom ? (g_InitialZoomPercent - 125) / 25 : 3);
-    g_RootPenWidth = (std::clamp)(g_RootPenWidth, DWORD{1}, DWORD{19});
+    g_RootPenWidth = (std::clamp)(g_RootPenWidth, DWORD{1}, DWORD{MAX_PEN_WIDTH});
 
     g_BreakTimeout = (std::clamp)(g_BreakTimeout, DWORD{1}, DWORD{99});
     g_BreakOpacity = (std::clamp)(g_BreakOpacity, DWORD{0}, DWORD{100});
@@ -398,15 +445,12 @@ void RestoreForeground()
 //----------------------------------------------------------------------------
 VOID ErrorDialog( HWND hParent, PCTSTR message, DWORD _Error )
 {
-    LPTSTR	lpMsgBuf;
-    TCHAR	errmsg[1024];
-
-    FormatMessage( FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
-                    NULL, _Error, 
-                    MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                    reinterpret_cast<LPTSTR>(&lpMsgBuf), 0, NULL );
-    _stprintf( errmsg, L"%s: %s", message, lpMsgBuf );
-    MessageBox( hParent, errmsg, APPNAME, MB_OK|MB_ICONERROR);
+    wchar_t detail[512]{}, text[1024]{};
+    if (!FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
+                        _Error, 0, detail, _countof(detail), nullptr))
+        StringCchPrintfW(detail, _countof(detail), L"Windows %lu", _Error);
+    StringCchPrintfW(text, _countof(text), L"%s\n%s", message, detail);
+    MessageBoxW(hParent, text, APPNAME, MB_OK | MB_ICONERROR);
 }
 
 //----------------------------------------------------------------------------
@@ -1926,35 +1970,35 @@ P_DRAW_UNDO GetOldestUndo(P_DRAW_UNDO list)
 // PushDrawUndo
 //
 //----------------------------------------------------------------------------
-void PushDrawUndo(HDC dc, P_DRAW_UNDO* list, int width, int height)
+bool PushDrawUndo(HDC dc, P_DRAW_UNDO* list, int width, int height)
 {
-    if (!dc || !list || width <= 0 || height <= 0) return;
-    // Bound history by bytes as well as entries: a 4K snapshot is about 32 MiB.
-    const size_t snapshotBytes = static_cast<size_t>(width) * height * 4;
-    const size_t capacity = (std::max)(size_t{1},
-        (std::min)(size_t{MAX_UNDO_HISTORY}, size_t{64 * 1024 * 1024} / snapshotBytes));
-    size_t count = 0;
-    for (auto undo = *list; undo; undo = undo->Next) ++count;
-    while (count >= capacity) { DeleteOldestUndo(list); --count; }
+    if (!dc || !list || width <= 0 || height <= 0) return false;
+    constexpr uint64_t budget = 64ull * 1024 * 1024;
+    const uint64_t snapshotBytes = static_cast<uint64_t>(width) * height * 4;
+    const size_t capacity = static_cast<size_t>(std::clamp<uint64_t>(budget / snapshotBytes, 1, MAX_UNDO_HISTORY));
+    if (!zoomit::runtime::Permit(zoomit::runtime::Api::Graphics)) return false;
     auto bitmap = CreateCompatibleBitmap(dc, width, height);
-    if (!bitmap && *list) {
-        DeleteOldestUndo(list);
-        bitmap = CreateCompatibleBitmap(dc, width, height);
-    }
-    if (!bitmap) return;
+    if (!bitmap) return false;
     auto undo = static_cast<P_DRAW_UNDO>(calloc(1, sizeof(DRAW_UNDO)));
-    if (!undo) { DeleteObject(bitmap); return; }
+    if (!undo) { DeleteObject(bitmap); return false; }
     undo->hDc = CreateCompatibleDC(dc);
     undo->hBitmap = bitmap;
-    if (!undo->hDc || !SelectObject(undo->hDc, bitmap) ||
-        !BitBlt(undo->hDc, 0, 0, width, height, dc, 0, 0, SRCCOPY)) {
-        DeleteDC(undo->hDc);
+    const HGDIOBJ previous = undo->hDc ? SelectObject(undo->hDc, bitmap) : nullptr;
+    if (!previous || previous == HGDI_ERROR || !zoomit::runtime::Permit(zoomit::runtime::Api::Capture) ||
+        !BitBlt(undo->hDc, 0, 0, width, height, dc, 0, 0, SRCCOPY) || !GdiFlush()) {
+        if (undo->hDc) DeleteDC(undo->hDc);
         DeleteObject(bitmap);
         free(undo);
-        return;
+        return false;
     }
+    // Commit the replacement only after copying succeeds, so an interrupted
+    // stroke cannot roll back to an older, unrelated drawing.
+    size_t count = 0;
+    for (auto entry = *list; entry; entry = entry->Next) ++count;
+    while (count >= capacity) { DeleteOldestUndo(list); --count; }
     undo->Next = *list;
     *list = undo;
+    return true;
 }
 
 //----------------------------------------------------------------------------
@@ -2222,7 +2266,7 @@ VOID DrawShape( DWORD Shape, HDC hDc, RECT *Rect, bool UseGdiPlus = false )
 // Inserts the pen message marker.
 //
 //----------------------------------------------------------------------------
-VOID SendPenMessage(HWND hWnd, UINT Message, LPARAM lParam)
+LRESULT SendPenMessage(HWND hWnd, UINT Message, LPARAM lParam)
 {
     WPARAM		wParam = 0;
     //
@@ -2236,8 +2280,10 @@ VOID SendPenMessage(HWND hWnd, UINT Message, LPARAM lParam)
 
         wParam |= MK_SHIFT;
     }
-    SetMessageExtraInfo(static_cast<LPARAM>(MI_WP_SIGNATURE));
-    SendMessage(hWnd, Message, wParam, lParam);
+    const LPARAM previous = SetMessageExtraInfo(static_cast<LPARAM>(MI_WP_SIGNATURE));
+    const LRESULT result = SendMessage(hWnd, Message, wParam, lParam);
+    SetMessageExtraInfo(previous);
+    return result;
 }
 
 
@@ -2245,52 +2291,24 @@ VOID SendPenMessage(HWND hWnd, UINT Message, LPARAM lParam)
 //
 // ScalePenPosition
 // 
-// Maps pen input to mouse input coordinates based on zoom level. Returns
-// 0 if pen is active but we didn't send this message to ourselves (pen
-// signature will be missing). 
+// Maps tagged pen input to canvas coordinates. The point (0,0) is valid.
 //
 //----------------------------------------------------------------------------
-LPARAM ScalePenPosition( float zoomLevel, MONITORINFO *monInfo, RECT boundRc,
-                    UINT message, LPARAM lParam )
+bool ScalePenPosition(float zoomLevel, const MONITORINFO* monInfo, RECT boundRc, LPARAM& lParam)
 {
-    RECT	rc;
-    WORD	x, y;
-    LPARAM	extraInfo;
-
-    extraInfo = GetMessageExtraInfo();
-    if( g_PenDown ) { 
-
-        // ignore messages we didn't tag as pen
-        if (extraInfo == MI_WP_SIGNATURE) {
-
-            OutputDebug( L"Tablet Pen message\n");
-
-            // tablet input: don't bound the cursor
-            ClipCursor(NULL);
-
-            x = LOWORD(lParam);
-            y = HIWORD(lParam);
-
-            x = static_cast<WORD>((x - static_cast<WORD>(monInfo->rcMonitor.left))/ zoomLevel) + static_cast<WORD>(boundRc.left - monInfo->rcMonitor.left);
-            y = static_cast<WORD>((y - static_cast<WORD>(monInfo->rcMonitor.top)) / zoomLevel) + static_cast<WORD>(boundRc.top - monInfo->rcMonitor.top);
-
-            lParam = MAKELPARAM(x, y);
-        }
-        else {
-
-            OutputDebug(L"Ignore pen message we didn't send\n");
-            lParam = 0;
-        }
-    
+    if (g_PenDown) {
+        if (GetMessageExtraInfo() != MI_WP_SIGNATURE) return false;
+        ClipCursor(nullptr);
+        const LONG x = static_cast<LONG>((GET_X_LPARAM(lParam) - monInfo->rcMonitor.left) / zoomLevel)
+                     + boundRc.left - monInfo->rcMonitor.left;
+        const LONG y = static_cast<LONG>((GET_Y_LPARAM(lParam) - monInfo->rcMonitor.top) / zoomLevel)
+                     + boundRc.top - monInfo->rcMonitor.top;
+        lParam = MAKELPARAM(x, y);
     } else {
-
-        if( !GetClipCursor( &rc )) {
-
-            ClipCursor( &boundRc );
-        }
-        OutputDebug( L"Mouse message\n");
+        RECT rc{};
+        if (!GetClipCursor(&rc)) ClipCursor(&boundRc);
     }
-    return lParam;
+    return true;
 } 
 
 
@@ -2448,42 +2466,35 @@ void DrawCursor( HDC hDcTarget, POINT pt, float ZoomLevel, int Width, int Height
 // ResizePen
 //
 //----------------------------------------------------------------------------
+struct PenWidths { DWORD screen, base; };
+
+static PenWidths ResizedPen(PenWidths previous, int requested, float scale, bool userChange) noexcept {
+    if (!(scale >= ZOOM_LEVEL_MIN && scale <= ZOOM_LEVEL_MAX)) scale = 1;
+    const int oldWidth = static_cast<int>(previous.screen);
+    // User steps are expressed in unscaled pixels. Automatic transitions already
+    // supply a screen width and must preserve the stored fractional-zoom reference.
+    if (userChange) requested = oldWidth + static_cast<int>((requested - oldWidth) * scale);
+    const int maximum = (std::min)(static_cast<int>(MAX_PEN_WIDTH * scale), MAX_LIVE_PEN_WIDTH);
+    const int width = (std::clamp)(requested, MIN_PEN_WIDTH, maximum);
+    const DWORD base = userChange && width != oldWidth
+        ? static_cast<DWORD>((std::clamp)(static_cast<int>(width / scale), 1, MAX_PEN_WIDTH))
+        : previous.base;
+    return {static_cast<DWORD>(width), base};
+}
+
 void ResizePen( HWND hWnd, HDC hdcScreenCompat, HDC hdcScreenCursorCompat, POINT prevPt,
                 BOOLEAN g_Tracing, BOOLEAN *g_Drawing, float g_LiveZoomLevel, 
                 BOOLEAN isUser, int newWidth )
 {
-    if( !g_Tracing ) {
-
-        RestoreCursorArea( hdcScreenCompat, hdcScreenCursorCompat, prevPt );
+    const PenWidths next = ResizedPen({g_PenWidth, g_RootPenWidth}, newWidth,
+                                      g_ZoomOnLiveZoom ? g_LiveZoomLevel : 1.0f, isUser != FALSE);
+    if (next.screen == g_PenWidth) return;
+    if (!g_Tracing) RestoreCursorArea(hdcScreenCompat, hdcScreenCursorCompat, prevPt);
+    g_PenWidth = next.screen;
+    if (g_RootPenWidth != next.base) {
+        g_RootPenWidth = next.base;
+        PersistSettings();
     }
-
-    OutputDebug( L"RESIZE_PEN-PRE: penWidth: %d ", g_PenWidth );
-    int prevWidth = g_PenWidth;
-    if( g_ZoomOnLiveZoom )
-    {
-        if( isUser )
-        {
-            // Amplify user delta proportional to LiveZoomLevel
-            newWidth = g_PenWidth + static_cast<int> ((newWidth - static_cast<int>(g_PenWidth))*g_LiveZoomLevel);
-        }
-
-        g_PenWidth = min( max( newWidth, MIN_PEN_WIDTH ),
-            min( static_cast<int>(MAX_PEN_WIDTH * g_LiveZoomLevel), MAX_LIVE_PEN_WIDTH ) );
-        g_RootPenWidth = static_cast<int>(g_PenWidth / g_LiveZoomLevel);
-    }
-    else
-    {
-        g_PenWidth = min( max( newWidth, MIN_PEN_WIDTH ), MAX_PEN_WIDTH );
-        g_RootPenWidth = g_PenWidth;
-    }
-
-    if(prevWidth == static_cast<int>(g_PenWidth) ) {
-        // No change
-        return;
-    }
-
-    OutputDebug( L"newWidth: %d\nRESIZE_PEN-POST: penWidth: %d\n", newWidth, g_PenWidth );
-    PersistSettings();
     SaveCursorArea( hdcScreenCursorCompat, hdcScreenCompat, prevPt );
     *g_Drawing = FALSE;
     EnableDisableStickyKeys( TRUE );
@@ -2511,13 +2522,32 @@ bool IsPenInverted( WPARAM wParam )
 // UpdateMonitorInfo
 //
 //----------------------------------------------------------------------------
-bool UpdateMonitorInfo(POINT point, MONITORINFO* output) noexcept
+template<class Info>
+bool UpdateMonitorInfo(POINT point, Info* output, const char* preferredDevice = nullptr) noexcept
 {
-    if (!output) return false;
-    MONITORINFO next{sizeof(MONITORINFO)};
-    const HMONITOR monitor = pMonitorFromPoint ? pMonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) :
-        MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-    const BOOL found = zoomit::runtime::Permit(zoomit::runtime::Api::Monitor) && monitor && (pGetMonitorInfo ? pGetMonitorInfo(monitor, &next) : GetMonitorInfo(monitor, &next));
+    if (!output || !zoomit::runtime::Permit(zoomit::runtime::Api::Monitor)) return false;
+    HMONITOR monitor{};
+    if (preferredDevice && *preferredDevice) {
+        // GDI names identify logical displays within a topology. A reconnect can
+        // assign a different name, and duplicate outputs can share a logical display.
+        struct Search { const char* device; HMONITOR match; } search{preferredDevice,nullptr};
+        EnumDisplayMonitors(nullptr,nullptr,[](HMONITOR candidate,HDC,LPRECT,LPARAM data) -> BOOL {
+            auto& search = *reinterpret_cast<Search*>(data);
+            MONITORINFOEXA info{};
+            info.cbSize = sizeof(info);
+            if (GetMonitorInfoA(candidate,&info) && lstrcmpiA(info.szDevice,search.device)==0) {
+                search.match = candidate;
+                return FALSE;
+            }
+            return TRUE;
+        },reinterpret_cast<LPARAM>(&search));
+        monitor=search.match;
+    }
+    if (!monitor) monitor = pMonitorFromPoint ? pMonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) :
+                                               MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    Info next{};
+    next.cbSize=sizeof(next);
+    const BOOL found = monitor && (pGetMonitorInfo ? pGetMonitorInfo(monitor, &next) : GetMonitorInfoA(monitor, &next));
     if (!found ||
         next.rcMonitor.right <= next.rcMonitor.left || next.rcMonitor.bottom <= next.rcMonitor.top) {
         return false;
@@ -2597,7 +2627,8 @@ LRESULT APIENTRY MainWndProcImpl(
     static UINT32 activePointerId = 0;
     static unsigned intentionalCaptureRelease = 0;
     static HWND		g_ActiveWindow = NULL;
-    static int		breakTimeout;
+    static int breakTimeout;
+    static ULONGLONG breakDeadline;
     static HBITMAP	g_hBackgroundBmp = NULL;
     static HDC		g_hDcBackgroundFile;
     static HPEN		hDrawingPen;
@@ -2642,8 +2673,7 @@ LRESULT APIENTRY MainWndProcImpl(
         }
         SetCursor(nullptr);
         // LiveZoom normally displays its magnified pointer without a second hardware pointer.
-        if (pMagShowSystemCursor)
-            pMagShowSystemCursor(!IsWindowVisible(g_hWndLiveZoom) || (g_fullScreenWorkaround && !resumeDraw));
+        SetSystemPointerVisible(!IsWindowVisible(g_hWndLiveZoom) || (g_fullScreenWorkaround && !resumeDraw));
     };
 
     const auto releaseSession = [&]() {
@@ -2697,7 +2727,7 @@ LRESULT APIENTRY MainWndProcImpl(
         state.rootPenWidth = g_RootPenWidth; state.pointerArrow = g_DrawPointer;
         if (g_TimerActive) {
             state.mode = recovery::Mode::Break;
-            state.breakDeadline = GetTickCount64() + static_cast<LONGLONG>(breakTimeout) * 1000;
+            state.breakDeadline = breakDeadline;
         } else if (g_Zoomed) {
             state.mode = (g_Drawing || drawingSuspended) ? recovery::Mode::Draw : recovery::Mode::Zoom;
             if (g_ZoomOnLiveZoom) {
@@ -2730,6 +2760,7 @@ LRESULT APIENTRY MainWndProcImpl(
     };
     const auto userModeAllowed = [&](WPARAM command) noexcept {
         if (hWndOptions || g_SelectionActive || g_bSaveInProgress || captureOperationDepth) return false;
+        if (g_VideoRepairPending) return !g_Zoomed && command == LIVE_HOTKEY;
         const bool snip = command == SNIP_HOTKEY || command == SNIP_SAVE_HOTKEY;
         if(g_Whiteboard.Active()) {
             if(command==WHITEBOARD_HOTKEY)return true;
@@ -2750,7 +2781,7 @@ LRESULT APIENTRY MainWndProcImpl(
         if (wParam != LIVE_DRAW_HOTKEY) return;
         timers.Stop(static_cast<unsigned>(3));
         SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
-        if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,true)) {
+        if ((g_VideoRepairPending || IsWindow(g_hWndLiveZoomMag)) && !SetLiveZoomFilter(hWnd,true)) {
             recovery::client.Serious(L"Ripristino filtro LiveDraw", ERROR_GEN_FAILURE); resetToIdle(); return;
         }
         if (IsWindowVisible(g_hWndLiveZoom))
@@ -2925,6 +2956,16 @@ LRESULT APIENTRY MainWndProcImpl(
     case WM_ENDSESSION:
         if (wParam) { recovery::client.NormalExit(); resetToIdle(); PostQuitMessage(0); }
         return 0;
+    case zoomit::video::VideoFinished:
+        if (static_cast<std::uint64_t>(wParam) == g_LiveSessionGeneration) {
+            if (g_VideoRepairPending) resetToIdle();
+            publish(false);
+        }
+        return 0;
+    case WM_DWMCOMPOSITIONCHANGED:
+        if (IsWindowVisible(g_hWndLiveZoom))
+            SendMessage(g_hWndLiveZoom, zoomit::video::VideoRequest, message, static_cast<LPARAM>(g_LiveSessionGeneration));
+        return 0;
     case WM_USER_RESET_LIVE_SESSION:
         if (static_cast<std::uint64_t>(wParam) == g_LiveSessionGeneration &&
             reinterpret_cast<HWND>(lParam) == g_hWndLiveZoom) resetToIdle();
@@ -2936,6 +2977,11 @@ LRESULT APIENTRY MainWndProcImpl(
     case WM_DPICHANGED:
     case WM_POWERBROADCAST:
         if (message == WM_POWERBROADCAST && wParam != PBT_APMRESUMEAUTOMATIC && wParam != PBT_APMRESUMESUSPEND) break;
+        if (IsWindowVisible(g_hWndLiveZoom)) {
+            const auto queued = SendMessage(g_hWndLiveZoom, zoomit::video::VideoRequest, message,
+                                            static_cast<LPARAM>(g_LiveSessionGeneration));
+            if (queued && !g_Zoomed && !g_TimerActive) return 0;
+        }
         if(g_Whiteboard.Active()) {
             const RECT boardMonitor=g_Whiteboard.Monitor();MONITORINFO boardCurrent{};
             if(!UpdateMonitorInfo(POINT{boardMonitor.left,boardMonitor.top},&boardCurrent) ||
@@ -3006,8 +3052,10 @@ LRESULT APIENTRY MainWndProcImpl(
                 if (restored && saved.mode == recovery::Mode::Break) {
                     SendMessage(hWnd, WM_COMMAND, IDC_BREAK, 0);
                     restored = g_TimerActive != FALSE;
-                    if (restored) breakTimeout = static_cast<int>((static_cast<LONGLONG>(saved.breakDeadline) -
-                        static_cast<LONGLONG>(GetTickCount64())) / 1000);
+                    if (restored) {
+                        breakDeadline = saved.breakDeadline;
+                        breakTimeout = BreakRemaining(breakDeadline, GetTickCount64());
+                    }
                 } else if (restored && saved.mode != recovery::Mode::LiveZoom && saved.mode!=recovery::Mode::Whiteboard) {
                     SendMessage(hWnd, WM_HOTKEY, ZOOM_HOTKEY,
                         saved.mode == recovery::Mode::FrozenLiveDraw ? SHALLOW_ZOOM : LIVE_DRAW_ZOOM);
@@ -3024,7 +3072,7 @@ LRESULT APIENTRY MainWndProcImpl(
                         if (saved.mode == recovery::Mode::LiveDraw) {
                             SetWindowLongPtr(hWnd, GWL_EXSTYLE, GetWindowLongPtr(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED);
                             SetLayeredWindowAttributes(hWnd, RGB(0,0,0), 0, LWA_COLORKEY);
-                            if ((IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,false)) ||
+                            if (((g_VideoRepairPending || IsWindow(g_hWndLiveZoomMag)) && !SetLiveZoomFilter(hWnd,false)) ||
                                 !timers.Start(hWnd, 3, 10)) restored = false;
                         }
                         if (saved.mode == recovery::Mode::FrozenLiveDraw) {
@@ -3033,7 +3081,7 @@ LRESULT APIENTRY MainWndProcImpl(
                         if (restored) ShowMainWindow(hWnd, monInfo, width, height);
                         if (restored && drawingSuspended) {
                             suspendedCursor.Update(g_PenColor); SetCapture(hWnd);
-                            if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+                            SetSystemPointerVisible(TRUE);
                             SetCursor(suspendedCursor.Get());
                         }
                     }
@@ -3165,7 +3213,7 @@ LRESULT APIENTRY MainWndProcImpl(
                 exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
                 SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
                 SetLayeredWindowAttributes(hWnd, COLORREF(RGB(0, 0, 0)), 0, LWA_COLORKEY);
-                if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,false)) {
+                if ((g_VideoRepairPending || IsWindow(g_hWndLiveZoomMag)) && !SetLiveZoomFilter(hWnd,false)) {
                     SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle);
                     recovery::client.Serious(L"Filtro ingresso LiveDraw", ERROR_GEN_FAILURE);
                     break;
@@ -3228,14 +3276,13 @@ LRESULT APIENTRY MainWndProcImpl(
             }
 
             if (g_Tracing || g_PenDown || g_TimerActive) break;
-            if (!g_Zoomed && IsWindowVisible(g_hWndLiveZoom))
-                SendMessage(g_hWndLiveZoom, WM_USER_FINISH_LIVE_ZOOM_ANIMATION, 0, 0);
             const bool wasLiveOnly = !g_Zoomed && IsWindowVisible(g_hWndLiveZoom);
-            float originalLiveLevel = 1.0f;
-            RECT originalLiveSource{};
+            LiveViewport originalLive{};
             if (wasLiveOnly) {
-                originalLiveLevel = *reinterpret_cast<const float*>(SendMessage(g_hWndLiveZoom, WM_USER_GET_ZOOM_LEVEL, 0, 0));
-                originalLiveSource = *reinterpret_cast<const RECT*>(SendMessage(g_hWndLiveZoom, WM_USER_GET_SOURCE_RECT, 0, 0));
+                const HWND liveWindow = g_hWndLiveZoom;
+                SendMessage(liveWindow, WM_USER_FINISH_LIVE_ZOOM_ANIMATION, 0, 0);
+                if (!SendMessage(liveWindow, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&originalLive)))
+                    break;
             }
             ++captureOperationDepth;
             const bool wasDrawing = g_Drawing != FALSE;
@@ -3249,8 +3296,8 @@ LRESULT APIENTRY MainWndProcImpl(
                 if (normalSnipReturn && wasLiveOnly && !g_Zoomed && IsWindowVisible(g_hWndLiveZoom) &&
                     sessionGeneration == originalGeneration + 1) {
                     if (haveOriginalMouse) SetCursorPos(originalMouse.x, originalMouse.y);
-                    SendMessage(g_hWndLiveZoom, WM_USER_SET_ZOOM, EncodeZoomLevel(originalLiveLevel),
-                                reinterpret_cast<LPARAM>(&originalLiveSource));
+                    SendMessage(g_hWndLiveZoom, WM_USER_SET_ZOOM, EncodeZoomLevel(originalLive.factor),
+                                reinterpret_cast<LPARAM>(&originalLive.source));
                     return;
                 }
                 if (sessionGeneration != originalGeneration || !g_Zoomed || !hdcScreenCompat) return;
@@ -3263,13 +3310,13 @@ LRESULT APIENTRY MainWndProcImpl(
                     boundRc = BoundMouse(zoomLevel, &monInfo, width, height, &cursorPos);
                     if (haveOriginalMouse) SetCursorPos(originalMouse.x, originalMouse.y);
                     SetCursor(nullptr);
-                    if (pMagShowSystemCursor) pMagShowSystemCursor(FALSE);
+                    SetSystemPointerVisible(FALSE);
                     InvalidateRect(hWnd, nullptr, FALSE);
                     UpdateWindow(hWnd);
                 } else if (wasSuspended) {
                     drawingSuspended = true;
                     SetCapture(hWnd);
-                    if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+                    SetSystemPointerVisible(TRUE);
                     SetCursor(suspendedCursor.Get());
                     if (haveOriginalMouse) SetCursorPos(originalMouse.x, originalMouse.y);
                 }
@@ -3381,19 +3428,23 @@ LRESULT APIENTRY MainWndProcImpl(
             if( !g_Zoomed && !g_TimerActive ) {
 
                 if( g_hWndLiveZoom == NULL ) {
+                    if (!EnsureMagnification()) {
+                        recovery::client.Serious(L"Riattivazione Magnification", GetLastError());
+                        break;
+                    }
                     OutputDebug(L"Create LIVEZOOM\n");
                     g_hWndLiveZoom = CreateWindowEx( WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
                         L"ZoomItCustomMagnifier", L"ZoomIt Live Zoom", 
                         WS_POPUP | WS_CLIPSIBLINGS,
                         0, 0, 0, 0, NULL, NULL, g_hInstance, static_cast<PVOID>(GetForegroundWindow()) );
                     if (!g_hWndLiveZoom) {
-                        if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+                        SetSystemPointerVisible(TRUE);
                         MessageBox(hWnd, L"Unable to initialize LiveZoom.", APPNAME, MB_ICONERROR);
                         break;
                     }
                     pSetLayeredWindowAttributes( hWnd, 0, 0, LWA_ALPHA );
                     EnableWindow( g_hWndLiveZoom, FALSE );
-                    if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,true)) {
+                    if ((g_VideoRepairPending || IsWindow(g_hWndLiveZoomMag)) && !SetLiveZoomFilter(hWnd,true)) {
                         recovery::client.Serious(L"Filtro iniziale LiveZoom", ERROR_GEN_FAILURE); resetToIdle(); break;
                     }
 
@@ -3463,15 +3514,16 @@ LRESULT APIENTRY MainWndProcImpl(
                 if( !g_Zoomed ) {
 
                     // Settle LiveZoom before Draw or Snip captures the view.
-                    if (IsWindowVisible(g_hWndLiveZoom))
-                        SendMessage(g_hWndLiveZoom, WM_USER_FINISH_LIVE_ZOOM_ANIMATION, 0, 0);
+                    const HWND captureLive = IsWindowVisible(g_hWndLiveZoom) ? g_hWndLiveZoom : nullptr;
+                    if (captureLive)
+                        SendMessage(captureLive, WM_USER_FINISH_LIVE_ZOOM_ANIMATION, 0, 0);
                     // Prepare into local owners; callbacks still observe the previous mode.
                     MONITORINFO preparedMonitor{};
                     zoomit::GraphicsSession prepared;
                     LiveViewport preparedLive{};
                     bool haveMonitor = zoomit::runtime::ReadCursor(&cursorPos) != FALSE;
-                    if (haveMonitor && IsWindowVisible(g_hWndLiveZoom)) {
-                        haveMonitor = SendMessage(g_hWndLiveZoom, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&preparedLive)) != 0;
+                    if (haveMonitor && captureLive) {
+                        haveMonitor = SendMessage(captureLive, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&preparedLive)) != 0;
                         if (haveMonitor) {
                             preparedMonitor.cbSize = sizeof(preparedMonitor);
                             preparedMonitor.rcMonitor = preparedMonitor.rcWork = preparedLive.monitor;
@@ -3479,29 +3531,34 @@ LRESULT APIENTRY MainWndProcImpl(
                             cursorPos.y = (std::clamp)(cursorPos.y, preparedLive.monitor.top, preparedLive.monitor.bottom-1);
                         }
                     } else if (haveMonitor) haveMonitor = UpdateMonitorInfo(cursorPos, &preparedMonitor);
-                    if (!haveMonitor || !prepared.Prepare(preparedMonitor.rcMonitor, g_PenWidth, g_PenColor)) {
+                    if (!haveMonitor || !prepared.Allocate(preparedMonitor.rcMonitor, g_PenWidth, g_PenColor)) {
                         recovery::client.Serious(L"Preparazione risorse Zoom", ERROR_NOT_ENOUGH_MEMORY);
                         if (IsWindowVisible(g_hWndLiveZoom)) {
                             SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
-                            if (!g_fullScreenWorkaround && pMagShowSystemCursor) pMagShowSystemCursor(FALSE);
+                            if (!g_fullScreenWorkaround) SetSystemPointerVisible(FALSE);
                         } else {
                             RestoreSystemPointer();
                         }
                         break;
                     }
-                    if (IsWindowVisible(g_hWndLiveZoom)) {
-                        SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, FALSE, 0);
-                        SendMessage(g_hWndLiveZoom, WM_USER_SESSION_TICK, 0, 0);
-                        // Capture again after hiding the magnified pointer.
-                        if (!BitBlt(prepared.canvas, 0, 0, preparedMonitor.rcMonitor.right-preparedMonitor.rcMonitor.left,
-                                preparedMonitor.rcMonitor.bottom-preparedMonitor.rcMonitor.top, prepared.screen,
-                                preparedMonitor.rcMonitor.left, preparedMonitor.rcMonitor.top, SRCCOPY|CAPTUREBLT) ||
-                            !BitBlt(prepared.saved, 0, 0, preparedMonitor.rcMonitor.right-preparedMonitor.rcMonitor.left,
-                                preparedMonitor.rcMonitor.bottom-preparedMonitor.rcMonitor.top, prepared.canvas, 0, 0, SRCCOPY)) {
-                            SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
-                            recovery::client.Serious(L"Cattura schermo Zoom", ERROR_GEN_FAILURE);
+                    if (captureLive) {
+                        SendMessage(captureLive, WM_USER_MAGNIFY_CURSOR, FALSE, 0);
+                        SendMessage(captureLive, WM_USER_SESSION_TICK, 0, 0);
+                        LiveViewport current{};
+                        if (!SendMessage(captureLive, WM_USER_GET_LIVE_VIEWPORT, 0, reinterpret_cast<LPARAM>(&current)) ||
+                            current.generation != preparedLive.generation || !EqualRect(&current.monitor,&preparedMonitor.rcMonitor)) {
+                            if (preparedLive.generation == g_LiveSessionGeneration && IsWindowVisible(captureLive))
+                                SendMessage(captureLive, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
                             break;
                         }
+                        preparedLive = current;
+                    }
+                    if (!prepared.Capture()) {
+                        const DWORD error = GetLastError();
+                        if (captureLive && preparedLive.generation == g_LiveSessionGeneration && IsWindowVisible(captureLive))
+                            SendMessage(captureLive, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
+                        recovery::client.Serious(L"Cattura schermo Zoom", error ? error : ERROR_GEN_FAILURE);
+                        break;
                     }
                     hdcScreen = std::exchange(prepared.screen, nullptr);
                     hdcScreenCompat = std::exchange(prepared.canvas, nullptr);
@@ -3545,13 +3602,11 @@ LRESULT APIENTRY MainWndProcImpl(
 
                         // Enter drawing mode
                         OutputDebug(L"Enter liveZoom draw\n");
-                        const auto source = reinterpret_cast<const RECT*>(SendMessage(g_hWndLiveZoom, WM_USER_GET_SOURCE_RECT, 0, 0));
-                        const auto level = reinterpret_cast<const float*>(SendMessage(g_hWndLiveZoom, WM_USER_GET_ZOOM_LEVEL, 0, 0));
-                        if (!source || !level || !std::isfinite(*level) || *level < 1 || *level > ZOOM_LEVEL_MAX) {
+                        if (preparedLive.generation != g_LiveSessionGeneration) {
                             recovery::client.Serious(L"Stato LiveZoom non valido", ERROR_INVALID_DATA);
                             resetToIdle(); break;
                         }
-                        g_LiveZoomSourceRect = *source; g_LiveZoomLevel = *level;
+                        g_LiveZoomSourceRect = preparedLive.source; g_LiveZoomLevel = preparedLive.factor;
                         
                         // Set live zoom level to 1 in preparation of us being full screen static
                         zoomLevel = 1.0;
@@ -3687,15 +3742,19 @@ LRESULT APIENTRY MainWndProcImpl(
             g_PenDown = TRUE;
             activePointerId = GET_POINTERID_WPARAM(wParam);
 
-            // Enter drawing mode
-            SendPenMessage(hWnd, WM_LBUTTONDOWN, lParam);
+            // The preparatory contact owns one undo snapshot only if accepted.
+            if (!SendPenMessage(hWnd, WM_LBUTTONDOWN, lParam)) {
+                activePointerId = 0; g_PenDown = FALSE; return TRUE;
+            }
             SendPenMessage(hWnd, WM_MOUSEMOVE, lParam);
             SendPenMessage(hWnd, WM_LBUTTONUP, lParam);
             SendPenMessage(hWnd, WM_MOUSEMOVE, lParam);
             if (PopDrawUndo(hdcScreenCompat, &drawUndoList, width, height)) canvasDirty = true;
 
             // Enter tracing mode
-            SendPenMessage(hWnd, WM_LBUTTONDOWN, lParam);
+            if (!SendPenMessage(hWnd, WM_LBUTTONDOWN, lParam)) {
+                activePointerId = 0; g_PenDown = FALSE;
+            }
         }
         break;
 
@@ -3780,26 +3839,10 @@ LRESULT APIENTRY MainWndProcImpl(
                     }				
                 }
             }
-        } else if( g_TimerActive && (breakTimeout > 0 || delta )) {
-
-            if( delta ) {
-
-                if( breakTimeout < 0 ) breakTimeout = 0;
-                if( breakTimeout % 60 ) {
-                    breakTimeout += (60 - breakTimeout % 60);
-                    delta--;
-                }
-                breakTimeout += delta * 60;
-
-            } else {
-
-                if( breakTimeout % 60 ) {
-                    breakTimeout -= breakTimeout % 60;
-                    delta--;
-                }
-                breakTimeout -= delta * 60;
-            }
-            if( breakTimeout < 0 ) breakTimeout = 0;
+        } else if (g_TimerActive && delta) {
+            const auto now = GetTickCount64();
+            breakTimeout = AdjustBreakDuration(BreakRemaining(breakDeadline, now), delta, 60);
+            breakDeadline = now + static_cast<ULONGLONG>(breakTimeout) * 1000;
             timers.Stop(static_cast<unsigned>(0));
             if (!timers.Start(hWnd, 0, 1000)) { recovery::client.Serious(L"Timer pausa", GetLastError()); resetToIdle(); break; }
             InvalidateRect( hWnd, NULL, TRUE );
@@ -3939,11 +3982,14 @@ LRESULT APIENTRY MainWndProcImpl(
 
                 if( !g_Drawing ) {
 
-                    SendMessage( hWnd, WM_LBUTTONDOWN, 0, MAKELPARAM( cursorPos.x, cursorPos.y));
+                    if (!SendMessage(hWnd, WM_LBUTTONDOWN, 0, MAKELPARAM(cursorPos.x, cursorPos.y))) break;
                 }
                 // Restore area where cursor was previously
                 RestoreCursorArea( hdcScreenCompat, hdcScreenCursorCompat, prevPt );
-                PushDrawUndo( hdcScreenCompat, &drawUndoList, width, height );
+                if (!PushDrawUndo(hdcScreenCompat, &drawUndoList, width, height)) {
+                    DrawCursor(hdcScreenCompat, prevPt, zoomLevel, width, height);
+                    break;
+                }
                 g_BlankedScreen = static_cast<int>(wParam);
                 rc.top = rc.left = 0;
                 rc.bottom = height;
@@ -4002,12 +4048,10 @@ LRESULT APIENTRY MainWndProcImpl(
         case VK_RIGHT:
             if( wParam == VK_RIGHT ) delta = 10;
             else					  delta = -10;
-            if( g_TimerActive && (breakTimeout > 0 || delta )) {
-
-                if( breakTimeout < 0 ) breakTimeout = 0;
-                breakTimeout += delta;
-                breakTimeout -= (breakTimeout % 10);
-                if( breakTimeout < 0 ) breakTimeout = 0;
+            if (g_TimerActive) {
+                const auto now = GetTickCount64();
+                breakTimeout = AdjustBreakDuration(BreakRemaining(breakDeadline, now), delta > 0 ? 1 : -1, 10);
+                breakDeadline = now + static_cast<ULONGLONG>(breakTimeout) * 1000;
                 timers.Stop(static_cast<unsigned>(0));
                 if (!timers.Start(hWnd, 0, 1000)) { recovery::client.Serious(L"Timer pausa", GetLastError()); resetToIdle(); break; }
                 InvalidateRect( hWnd, NULL, TRUE );
@@ -4027,7 +4071,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     timers.Stop(static_cast<unsigned>(3));
                     LONG_PTR exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
                     SetWindowLongPtr(hWnd, GWL_EXSTYLE, exStyle & ~WS_EX_LAYERED);
-                    if (IsWindow(g_hWndLiveZoomMag) && !SetLiveZoomFilter(hWnd,true)) {
+                    if ((g_VideoRepairPending || IsWindow(g_hWndLiveZoomMag)) && !SetLiveZoomFilter(hWnd,true)) {
                         recovery::client.Serious(L"Ripristino filtro dopo LiveDraw", ERROR_GEN_FAILURE); resetToIdle(); break;
                     }
                     SendMessage( g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0 );
@@ -4060,17 +4104,11 @@ LRESULT APIENTRY MainWndProcImpl(
                 POINT currentPt;
 
                 // Are we in pen mode on a tablet?
-                lParam = ScalePenPosition( zoomLevel, &monInfo, boundRc, message, lParam);	
+                if (!ScalePenPosition(zoomLevel, &monInfo, boundRc, lParam)) break;
                 currentPt.x = LOWORD(lParam);
                 currentPt.y = HIWORD(lParam);
 
-                if(lParam == 0) {
-
-                    // Drop it
-                    OutputDebug(L"Mousemove: Dropping\n");
-                    break;
-
-                } else if(g_DrawingShape) {
+                if(g_DrawingShape) {
 
                     SetROP2(hdcScreenCompat, R2_NOTXORPEN); 
      
@@ -4276,6 +4314,7 @@ LRESULT APIENTRY MainWndProcImpl(
 
             OutputDebug(L"LBUTTONDOWN: drawing\n");
 
+            if (!ScalePenPosition(zoomLevel, &monInfo, boundRc, lParam)) return FALSE;
             // Save current bitmap to undo history
             if( g_HaveDrawn ) {
 
@@ -4285,23 +4324,17 @@ LRESULT APIENTRY MainWndProcImpl(
             // don't push undo if we sent this to ourselves for a pen resize
             if( wParam != -1 ) {
                 
-                PushDrawUndo( hdcScreenCompat, &drawUndoList, width, height );
+                if (!PushDrawUndo(hdcScreenCompat, &drawUndoList, width, height)) {
+                    if (g_Drawing) DrawCursor(hdcScreenCompat, prevPt, zoomLevel, width, height);
+                    return FALSE;
+                }
 
             } else {
 
                 wParam = 0;
             }
 
-            // Are we in pen mode on a tablet?
-            lParam = ScalePenPosition( zoomLevel, &monInfo, boundRc,
-                        message, lParam);
-
-            if (lParam == 0) {
-
-                // Drop it
-                break;
-
-            } else if( g_Drawing ) {
+            if( g_Drawing ) {
 
                 // is the user drawing a rectangle?
                 if( wParam & MK_CONTROL ||
@@ -4420,8 +4453,9 @@ LRESULT APIENTRY MainWndProcImpl(
                 // Constrain the mouse to the visible region
                 boundRc = BoundMouse( zoomLevel, &monInfo, width, height, &cursorPos );
             }
-        } 
-        return TRUE;
+            return TRUE;
+        }
+        return FALSE;
 
     case WM_LBUTTONUP:
         if (g_Zoomed && g_Tracing) canvasDirty = true;
@@ -4431,14 +4465,8 @@ LRESULT APIENTRY MainWndProcImpl(
         if( g_Zoomed && g_Drawing && g_Tracing ) {
 
             // Are we in pen mode on a tablet?
-            lParam = ScalePenPosition( zoomLevel, &monInfo, boundRc,
-                        message, lParam);
+            if (!ScalePenPosition(zoomLevel, &monInfo, boundRc, lParam)) break;
             OutputDebug(L"LBUTTONUP: %d, %d\n", LOWORD(lParam), HIWORD(lParam));
-            if (lParam == 0) {
-
-                // Drop it
-                break;
-            }
 
             POINT adjustPos;
             adjustPos.x = LOWORD(lParam);
@@ -4633,7 +4661,7 @@ LRESULT APIENTRY MainWndProcImpl(
                 suspendedCursor.Update(g_PenColor);
                 // Capture also makes the next click reach Draw through LiveDraw's transparent background.
                 SetCapture(hWnd);
-                if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+                SetSystemPointerVisible(TRUE);
                 SetCursor(suspendedCursor.Get());
                 SetCursorPos(monInfo.rcMonitor.left + visiblePoint.x, monInfo.rcMonitor.top + visiblePoint.y);
             }
@@ -4982,18 +5010,16 @@ LRESULT APIENTRY MainWndProcImpl(
                 
                 g_hBackgroundBmp = NULL;
                 g_hBackgroundBmp = LoadImageFile( g_BreakBackgroundFile );
-                if( g_hBackgroundBmp == NULL )
-                {
-                    // Clean up hanging handles
-                    SendMessage( hWnd, WM_HOTKEY, ZOOM_HOTKEY, 0 );
-                    ErrorDialog( hWnd, L"Error loading background bitmap", GetLastError() );
-                    break;
+                // An optional image can be missing or undecodable. With no bitmap
+                // the timer already paints its standard solid background.
+                if (g_hBackgroundBmp) {
+                    g_hDcBackgroundFile = CreateCompatibleDC(hdcScreen);
+                    if (!g_hDcBackgroundFile || !SelectObject(g_hDcBackgroundFile, g_hBackgroundBmp)) {
+                        recovery::client.Serious(L"Risorse sfondo Break", ERROR_NOT_ENOUGH_MEMORY);
+                        resetToIdle();
+                        break;
+                    }
                 }
-                g_hDcBackgroundFile = CreateCompatibleDC( hdcScreen );
-                if (!g_hDcBackgroundFile || !g_hBackgroundBmp ||
-                !SelectObject(g_hDcBackgroundFile, g_hBackgroundBmp)) {
-                recovery::client.Serious(L"Risorse sfondo Break", ERROR_NOT_ENOUGH_MEMORY); resetToIdle(); break;
-            }
             }
             // If the background is a desktop that hasn't been collected, grab it now
             else if( g_BreakShowBackgroundFile && g_BreakShowDesktop && !g_TimerActive )
@@ -5012,7 +5038,8 @@ LRESULT APIENTRY MainWndProcImpl(
 
             g_TimerActive = TRUE;
 
-            breakTimeout = g_BreakTimeout * 60 + 1;
+            breakTimeout = static_cast<int>(g_BreakTimeout) * 60;
+            breakDeadline = GetTickCount64() + static_cast<ULONGLONG>(breakTimeout) * 1000;
 
             // Create font
             g_LogFont.lfHeight = height / 5;
@@ -5088,12 +5115,15 @@ LRESULT APIENTRY MainWndProcImpl(
             //
             // Break timer
             //
-            breakTimeout -= 1;
+            {
+            const bool wasPositive = breakTimeout > 0;
+            breakTimeout = BreakRemaining(breakDeadline, GetTickCount64());
             InvalidateRect( hWnd, NULL, FALSE );
-            if( breakTimeout == 0 && g_BreakPlaySoundFile ) {
+            if( wasPositive && breakTimeout <= 0 && g_BreakPlaySoundFile ) {
 
                 PlaySound( g_BreakSoundFile, NULL, SND_FILENAME|SND_ASYNC );
-            } 
+            }
+            }
             break;
 
         case 2:
@@ -5161,7 +5191,7 @@ LRESULT APIENTRY MainWndProcImpl(
                     g_ZoomOnLiveZoom = FALSE;
                     if (IsWindowVisible(g_hWndLiveZoom))
                         SendMessage(g_hWndLiveZoom, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
-                    else if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+                    else SetSystemPointerVisible(TRUE);
                     forcePenResize = TRUE;
                 }
 
@@ -5390,7 +5420,7 @@ LRESULT APIENTRY MainWndProcImpl(
         EnableDisableStickyKeys(TRUE);
         ClipCursor(nullptr);
         if (IsWindow(g_hWndLiveZoom)) DestroyLiveZoomWindow(g_hWndLiveZoom);
-        if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+        SetSystemPointerVisible(TRUE);
         SetCursor(LoadCursor(nullptr, IDC_ARROW));
         releaseSession();
         DeleteDC(g_hDcBackgroundFile); g_hDcBackgroundFile = nullptr;
@@ -5436,7 +5466,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
     RECT		rc;
     POINT		cursorPos{};
     static int	width, height;
-    static MONITORINFO	monInfo;
+    static MONITORINFOEXA monInfo;
 #if 0
     int			delta;
     BOOLEAN		zoomIn;
@@ -5464,13 +5494,230 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
     static BOOLEAN	startedInPresentationMode = FALSE;
     MAGTRANSFORM matrix;
 
-    const auto graphicsFailure = [&](const wchar_t* operation) {
-        if (resetQueued) return;
-        resetQueued = true;
+    static zoomit::video::DriverResetEvents driverEvents;
+    static zoomit::video::RepairWindow repair;
+    static zoomit::runtime::SessionTimers<1> repairTimer;
+    static RECT repairSource{};
+    static MONITORINFOEXA repairMonitor{};
+    static float repairZoom = 1;
+    static bool repairCursor = true;
+
+    const auto repairAbandon = [&](const wchar_t *operation) {
         const DWORD error = GetLastError();
+        repairTimer.StopAll();
         recovery::client.Serious(operation, error ? error : ERROR_GEN_FAILURE);
-        if (!zoomit::runtime::Permit(zoomit::runtime::Api::Post) || !PostMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(hWnd)))
-            SendMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration), reinterpret_cast<LPARAM>(hWnd));
+
+        // Main owns mode/canvas teardown. Do not destroy this host during its callback.
+        if (!PostMessage(g_hWndMain, zoomit::video::VideoFinished, static_cast<WPARAM>(g_LiveSessionGeneration), 0))
+            SendMessage(g_hWndMain, zoomit::video::VideoFinished, static_cast<WPARAM>(g_LiveSessionGeneration), 0);
+    };
+    const auto repairArm = [&](DWORD delay) {
+        if (!repairTimer.Start(hWnd, 0, (std::max)(DWORD(1), delay))) {
+            repairAbandon(L"Timer di recupero video");
+            return false;
+        }
+        return true;
+    };
+    const auto repairDetach = [&]() {
+        repair.detached = false;
+        if (IsWindow(g_hWndLiveZoomMag)) {
+            const HWND old = g_hWndLiveZoomMag;
+            // Relinquish the old magnified cursor while visible, without forcing a paint on a lost device.
+            if (!SetMagnifierCursorStyle(old, false))
+                return false;
+            if (!DestroyWindow(old))
+                return false;
+            g_hWndLiveZoomMag = nullptr;
+        }
+        if (g_MagnificationReady) {
+            // Keep the hardware pointer available while the magnifier is detached.
+            // The desired post-recovery visibility still belongs to the drawing mode.
+            if (pMagShowSystemCursor)
+                pMagShowSystemCursor(TRUE);
+            if (g_fullScreenWorkaround) {
+                if (pMagSetFullscreenTransform)
+                    pMagSetFullscreenTransform(1, 0, 0);
+                if (pMagSetInputTransform)
+                    pMagSetInputTransform(FALSE, nullptr, nullptr);
+            }
+            if (!MagUninitialize())
+                return false;
+            g_MagnificationReady = false;
+        }
+        repair.detached = true;
+        return true;
+    };
+    if (message == zoomit::video::DriverReset) {
+        if (!driverEvents.Accept(wParam))
+            return 0;
+        return SendMessage(hWnd, zoomit::video::VideoRequest, 4101, static_cast<LPARAM>(g_LiveSessionGeneration));
+    }
+    if (message == zoomit::video::VideoRequest) {
+        if (static_cast<std::uint64_t>(lParam) != g_LiveSessionGeneration || !active || exiting ||
+            g_RebuildingVideo)
+            return 0;
+        const ULONGLONG now = GetTickCount64();
+        if (repair.pending) {
+            repair.Request(now, g_LiveSessionGeneration);
+            return 1;
+        }
+        if (!zoomit::runtime::ValidViewport(lastSourceRect, monInfo.rcMonitor, zoomLevel))
+            return 0;
+        bool force = wParam == 4101 || wParam == ERROR_GEN_FAILURE || wParam == WM_POWERBROADCAST;
+        if (!force && repair.completed && now - repair.completed < 1000) {
+            MONITORINFOEXA current{};
+            POINT origin{monInfo.rcMonitor.left, monInfo.rcMonitor.top};
+            force = !UpdateMonitorInfo(origin, &current, monInfo.szDevice) ||
+                    lstrcmpiA(current.szDevice, monInfo.szDevice) != 0 ||
+                    !EqualRect(&current.rcMonitor, &monInfo.rcMonitor);
+        }
+        if (!repair.Request(now, g_LiveSessionGeneration, force))
+            return 0;
+        repairSource = lastSourceRect;
+        repairMonitor = monInfo;
+        repairZoom = zoomLevel;
+        repairCursor = !IsWindow(g_hWndLiveZoomMag) ||
+                       (GetWindowLongPtr(g_hWndLiveZoomMag, GWL_STYLE) & MS_SHOWMAGNIFIEDCURSOR) != 0;
+        ++g_LiveSessionGeneration;
+        repair.generation = g_LiveSessionGeneration;
+        g_VideoRepairPending = true;
+        timers.StopAll();
+        g_ZoomIndicator.Hide();
+
+        if (!zoomit::runtime::Permit(zoomit::runtime::Api::Post) ||
+            !PostMessage(hWnd, zoomit::video::VideoStep, static_cast<WPARAM>(repair.generation), 0))
+            repairAbandon(L"Avvio recupero video");
+        return 1;
+    }
+    const bool repairTick = message == WM_TIMER && repairTimer.Role(wParam) == 0;
+    if (message == zoomit::video::VideoStep || repairTick) {
+        if (!repair.pending || repair.generation != g_LiveSessionGeneration ||
+            (message == zoomit::video::VideoStep && static_cast<std::uint64_t>(wParam) != repair.generation))
+            return 0;
+        repairTimer.StopAll();
+        if (repair.Exhausted(GetTickCount64())) {
+            repairAbandon(L"Limite tentativi di recupero video");
+            return 0;
+        }
+        if (!repair.detached) {
+            if (!repairDetach()) {
+                ++repair.attempts;
+                repair.Retry(GetTickCount64());
+                repairArm(500);
+                return 0;
+            }
+        }
+        const DWORD delay = repair.Delay(GetTickCount64());
+        if (delay) {
+            repairArm(delay);
+            return 0;
+        }
+        ++repair.attempts;
+        g_RebuildingVideo = true;
+        const auto buildingGuard = zoomit::OnExit([] { g_RebuildingVideo = false; });
+
+        MONITORINFOEXA current{};
+        POINT center{static_cast<LONG>((int64_t(repairSource.left) + repairSource.right) / 2),
+                     static_cast<LONG>((int64_t(repairSource.top) + repairSource.bottom) / 2)};
+        RECT fitted = repairSource;
+        POINT pointer{};
+        bool restored =
+            UpdateMonitorInfo(center, &current, repairMonitor.szDevice) && zoomit::runtime::ReadCursor(&pointer);
+        // Compare with the captured geometry on every retry, even after a partial
+        // attempt has updated monInfo. Always rebase the original source exactly once.
+        if (restored && !EqualRect(&current.rcMonitor, &repairMonitor.rcMonitor))
+            restored = zoomit::video::FitViewport(repairSource, repairMonitor.rcMonitor, current.rcMonitor,
+                                                  repairZoom, fitted);
+        if (restored)
+            restored = EnsureMagnification();
+        if (restored) {
+            monInfo = current;
+            width = monInfo.rcMonitor.right - monInfo.rcMonitor.left;
+            height = monInfo.rcMonitor.bottom - monInfo.rcMonitor.top;
+            restored = SetWindowPos(hWnd, nullptr, monInfo.rcMonitor.left, monInfo.rcMonitor.top, width, height,
+                                    SWP_NOACTIVATE | SWP_NOZORDER) != FALSE;
+        }
+        if (restored && !g_fullScreenWorkaround) {
+            const DWORD style = WS_CHILD | (repairCursor ? MS_SHOWMAGNIFIEDCURSOR : 0);
+            if (zoomit::runtime::Permit(zoomit::runtime::Api::Graphics))
+                g_hWndLiveZoomMag = CreateWindowExW(0, WC_MAGNIFIER, L"MagnifierWindow", style, 0, 0, width, height,
+                                                    hWnd, nullptr, g_hInstance, nullptr);
+            restored = IsWindow(g_hWndLiveZoomMag) != FALSE;
+            if (restored) {
+                restored = SetLiveZoomFilter(g_hWndMain, g_ExcludeLiveCanvas) != FALSE;
+            }
+        }
+        if (restored) {
+            resetQueued = false;
+            g_FailedLiveGeneration = 0;
+            restored = SendMessage(hWnd, WM_USER_SET_ZOOM, EncodeZoomLevel(repairZoom),
+                                   reinterpret_cast<LPARAM>(&fitted)) != 0;
+        }
+        if (restored)
+            restored = timers.Start(hWnd, 0, ZOOM_LEVEL_STEP_TIME) != 0;
+        if (restored) {
+            if (g_hWndLiveZoomMag)
+                ShowWindow(g_hWndLiveZoomMag, SW_SHOWNOACTIVATE);
+            if (pMagShowSystemCursor)
+                pMagShowSystemCursor(g_SystemCursorWanted);
+            repair.Success(GetTickCount64());
+            g_VideoRepairPending = false;
+            holdRestoredView = true;
+            forceTransform = false;
+            cursorUnavailableSince = 0;
+            g_LiveZoomWheel.SetTarget(nullptr, 0, 0);
+
+            if (IsWindow(g_hWndMain))
+                SendMessage(g_hWndMain, zoomit::video::VideoFinished, static_cast<WPARAM>(g_LiveSessionGeneration),
+                            0);
+        } else {
+
+            // Every retry starts with fresh magnifier run-time objects.
+            repairDetach();
+            repair.Retry(GetTickCount64());
+            repairArm(500);
+        }
+        return 0;
+    }
+    if (repair.pending) {
+        if (message == WM_USER_SESSION_TICK || message == WM_HOTKEY || message == WM_MOUSEWHEEL ||
+            message == WM_USER_LIVE_ZOOM_WHEEL)
+            return 0;
+        if (message == WM_USER_MAGNIFY_CURSOR) {
+            repairCursor = wParam != FALSE;
+            return 0;
+        }
+        if (message == WM_USER_SET_ZOOM && !g_RebuildingVideo) {
+            const float requested = DecodeZoomLevel(wParam);
+            const RECT requestedSource = lParam ? *reinterpret_cast<const RECT *>(lParam) : repairSource;
+            if (!zoomit::runtime::ValidViewport(requestedSource, monInfo.rcMonitor, requested))
+                return 0;
+            repairSource = lastSourceRect = requestedSource;
+            repairZoom = zoomLevel = zoomTelescopeTarget = resumeZoom = requested;
+            return TRUE;
+        }
+    }
+    if (message == WM_DISPLAYCHANGE || message == WM_DWMCOMPOSITIONCHANGED) {
+        SendMessage(hWnd, zoomit::video::VideoRequest, message, static_cast<LPARAM>(g_LiveSessionGeneration));
+        return 0;
+    }
+
+    const auto graphicsFailure = [&](const wchar_t *operation, bool recoverMagnifier = false) {
+        if (g_RebuildingVideo || resetQueued)
+            return;
+        const DWORD error = GetLastError();
+        if (recoverMagnifier && active &&
+            zoomit::runtime::ValidViewport(lastSourceRect, monInfo.rcMonitor, zoomLevel) &&
+            SendMessage(hWnd, zoomit::video::VideoRequest, ERROR_GEN_FAILURE,
+                        static_cast<LPARAM>(g_LiveSessionGeneration)))
+            return;
+        resetQueued = true;
+        recovery::client.Serious(operation, error ? error : ERROR_GEN_FAILURE);
+        if (!zoomit::runtime::Permit(zoomit::runtime::Api::Post) ||
+            !PostMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration),
+                         reinterpret_cast<LPARAM>(hWnd)))
+            SendMessage(g_hWndMain, WM_USER_RESET_LIVE_SESSION, static_cast<WPARAM>(g_LiveSessionGeneration),
+                        reinterpret_cast<LPARAM>(hWnd));
     };
     static ULONG_PTR wheelEpoch{};
     static int wheelRemainder{};
@@ -5557,6 +5804,10 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             active = true;
             resetQueued = false; cursorUnavailableSince = 0;
             ++g_LiveSessionGeneration;
+            repair = {};
+            repairTimer.StopAll();
+            g_VideoRepairPending = false;
+            driverEvents.Start(hWnd, static_cast<ULONG_PTR>(g_LiveSessionGeneration));
             timers.StopAll();
             holdRestoredView = false;
 
@@ -5612,7 +5863,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
 
             // Hide hardware cursor
             if( !g_fullScreenWorkaround )
-                if( pMagShowSystemCursor ) pMagShowSystemCursor( FALSE );
+                SetSystemPointerVisible( FALSE );
 
             lastCursorPos = cursorPos;
             SetCursorPos( lastCursorPos.x, lastCursorPos.y );
@@ -5624,6 +5875,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             ShowZoomIndicator(zoomTelescopeTarget,hWnd,true);
         
         } else {
+            driverEvents.Stop();
             // Fallback for a hide requested outside our explicit transition helpers.
             PrepareLiveZoomCursorRelease(hWnd);
             g_ZoomIndicator.Hide();
@@ -5633,7 +5885,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             timers.Stop(0);
 
             if( !g_fullScreenWorkaround )
-                if( pMagShowSystemCursor ) pMagShowSystemCursor( TRUE );
+                SetSystemPointerVisible( TRUE );
 
             // Reset the timer to expire two hours from now
             if( g_OsVersion < WIN7_VERSION && !IsPresentationMode()) {
@@ -5815,7 +6067,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
                 else {
 
                     if (!pMagSetWindowTransform || !pMagSetWindowTransform(g_hWndLiveZoomMag, &matrix)) {
-                        graphicsFailure(L"Trasformazione LiveZoom"); return 0;
+                        graphicsFailure(L"Trasformazione LiveZoom", true); return 0;
                     }
                 }
             }
@@ -5879,6 +6131,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         break;
 
     case WM_USER_TOGGLE_LIVE_ZOOM:
+        if (repair.pending) { DestroyLiveZoomWindow(hWnd); return 0; }
         g_ZoomIndicator.Hide();
         if (exiting) {
             exiting = false;
@@ -5898,7 +6151,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             prevZoomStepTickCount = 0;
             // LiveDraw has released its overlay before reaching this transition.
             SendMessage(hWnd, WM_USER_MAGNIFY_CURSOR, TRUE, 0);
-            if (!g_fullScreenWorkaround && pMagShowSystemCursor) pMagShowSystemCursor(FALSE);
+            if (!g_fullScreenWorkaround) SetSystemPointerVisible(FALSE);
             SendMessage(hWnd, WM_USER_SESSION_TICK, 0, 0);
         }
         return 0;
@@ -5936,9 +6189,14 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         }
         break;
     case WM_DESTROY:
+        driverEvents.Stop();
+        repair.Cancel();
+        repairTimer.StopAll();
+        g_RebuildingVideo = false;
         // The normal paths release before DestroyWindow hides the parent.
         // Keep this idempotent fallback for externally initiated destruction.
         PrepareLiveZoomCursorRelease(hWnd);
+        g_VideoRepairPending = false;
         g_ZoomIndicator.Hide();
         g_LiveZoomWheel.SetTarget(nullptr,0,0);
         active = false;
@@ -5949,7 +6207,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
         timers.Stop(1);
         UnregisterHotKey(hWnd, 0);
         UnregisterHotKey(hWnd, 1);
-        if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
+        SetSystemPointerVisible(TRUE);
         if (g_fullScreenWorkaround) {
             pMagSetFullscreenTransform(1.0f, 0, 0);
             pMagSetInputTransform(FALSE, nullptr, nullptr);
@@ -5966,7 +6224,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
 
     case WM_SIZE:
         GetClientRect(hWnd, &rc);
-        SetWindowPos(g_hWndLiveZoomMag, NULL, 
+        if (IsWindow(g_hWndLiveZoomMag)) SetWindowPos(g_hWndLiveZoomMag, NULL,
             rc.left, rc.top, rc.right, rc.bottom, 0 );
         break;
 
@@ -5979,24 +6237,14 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
     case WM_USER_MAGNIFY_CURSOR:
         {
             if (g_fullScreenWorkaround || !IsWindow(g_hWndLiveZoomMag)) {
-                if (pMagShowSystemCursor) pMagShowSystemCursor(wParam != FALSE);
+                SetSystemPointerVisible(wParam != FALSE);
                 break;
             }
             const HWND magnifier = g_hWndLiveZoomMag;
             if (GetParent(magnifier) != hWnd ||
                 GetWindowThreadProcessId(magnifier, nullptr) != GetCurrentThreadId()) return 0;
-            auto style = GetWindowLong(magnifier, GWL_STYLE);
-            if( wParam == TRUE )
-            {
-                style |= MS_SHOWMAGNIFIEDCURSOR;
-            }
-            else
-            {
-                style &= ~MS_SHOWMAGNIFIEDCURSOR;
-            }
-            SetLastError(ERROR_SUCCESS);
-            if (!SetWindowLong(magnifier, GWL_STYLE, style) && GetLastError() != ERROR_SUCCESS) {
-                graphicsFailure(L"Cursore ingrandito LiveZoom"); return 0;
+            if (!SetMagnifierCursorStyle(magnifier, wParam != FALSE)) {
+                graphicsFailure(L"Cursore ingrandito LiveZoom", true); return 0;
             }
             InvalidateRect(magnifier, nullptr, TRUE);
             RedrawWindow(hWnd, nullptr, nullptr, RDW_ALLCHILDREN | RDW_UPDATENOW);
@@ -6034,7 +6282,7 @@ LRESULT CALLBACK LiveZoomWndProcImpl(HWND hWnd, UINT message, WPARAM wParam, LPA
             else {
 
                 if (!pMagSetWindowTransform || !pMagSetWindowTransform(g_hWndLiveZoomMag, &matrix)) {
-                    graphicsFailure(L"Ripristino trasformazione LiveZoom"); return 0;
+                    graphicsFailure(L"Ripristino trasformazione LiveZoom", true); return 0;
                 }
             }
             // Keep a displayed label aligned with exact recovery/restore factors.
@@ -6298,14 +6546,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
             pMagInitialize = nullptr;
         }
     }
-    bool magnificationInitialized = pMagInitialize && pMagSetWindowTransform &&
+    g_MagnificationReady = pMagInitialize && pMagSetWindowTransform &&
         pMagSetWindowSource && pMagSetWindowFilterList && pMagInitialize();
-    if (!magnificationInitialized) pMagInitialize = nullptr;
+    if (!g_MagnificationReady) pMagInitialize = nullptr;
     /* Perform initializations that apply to a specific instance */
     g_hWndMain = InitInstance(hInstance, nCmdShow);
     if (!g_hWndMain) {
         recovery::client.Serious(L"Creazione finestra applicazione", GetLastError());
-        if (magnificationInitialized) MagUninitialize();
+        if (g_MagnificationReady) { MagUninitialize(); g_MagnificationReady=false; }
         CoUninitialize();
         return 1;
     }
@@ -6331,8 +6579,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 
     if (IsWindow(g_hWndMain)) DestroyWindow(g_hWndMain);
-    if (pMagShowSystemCursor) pMagShowSystemCursor(TRUE);
-    if (magnificationInitialized) MagUninitialize();
+    SetSystemPointerVisible(TRUE);
+    if (g_MagnificationReady) { MagUninitialize(); g_MagnificationReady=false; }
     CoUninitialize();
     if (retCode == 0) recovery::client.NormalExit();
     return retCode;

@@ -61,6 +61,30 @@ DrawingEffectsResults RunDrawingEffectsRegression() {
     auto restore=zoomit::OnExit([&]{zoomit::runtime::Clear();g_PenColor=oldColor;g_PenWidth=oldWidth;g_BlurRadius=oldBlur;});
     g_PenColor=0x8000ffff;g_PenWidth=6;g_BlurRadius=4;
     drawing_test::Canvas canvas;Gdiplus::SolidBrush highlight(Gdiplus::Color(128,255,255,0));Gdiplus::Pen pen(Gdiplus::Color(255,0,0,0),6);
+    {
+        P_DRAW_UNDO history{};
+        auto freeHistory = zoomit::OnExit([&]{DeleteDrawUndoList(&history);zoomit::runtime::Clear();});
+        for (int i=0; i<MAX_UNDO_HISTORY; ++i) {
+            SetPixel(canvas.Dc(), 1, 1, RGB(i,0,0));
+            require(PushDrawUndo(canvas.Dc(), &history, 64, 64), "Fill an offscreen undo history");
+        }
+        for (auto api : {zoomit::runtime::Api::Graphics, zoomit::runtime::Api::Capture}) {
+            zoomit::runtime::FailAt(api, 1);
+            require(!PushDrawUndo(canvas.Dc(), &history, 64, 64), "Reject incomplete undo entry");
+            zoomit::runtime::Clear();
+        }
+        for (int i=MAX_UNDO_HISTORY-1; i>=0; --i) {
+            require(PopDrawUndo(canvas.Dc(), &history, 64, 64) && GetPixel(canvas.Dc(),1,1)==RGB(i,0,0),
+                    "Failed pushes at capacity must preserve every prior drawing in order");
+        }
+        require(!history, "All previous checkpoints restored");
+    }
+    require(BreakRemaining(60000,0)==60 && BreakRemaining(60000,5501)==55 &&
+            BreakRemaining(60000,59999)==1 && BreakRemaining(60000,60000)==0 &&
+            BreakRemaining(60000,64299)==-4, "Late or coalesced ticks must use the original break deadline");
+    require(AdjustBreakDuration(179,1,60)==180 && AdjustBreakDuration(179,-1,60)==120 &&
+            AdjustBreakDuration(180,-1,60)==120 && AdjustBreakDuration(-5,-1,60)==0,
+            "Minute adjustment must round in the direction of the wheel");
     Gdiplus::Bitmap mask(64,64,PixelFormat32bppARGB);
     {Gdiplus::Graphics brush(&mask);require(brush.Clear(Gdiplus::Color(255,255,255,255))==Gdiplus::Ok,"Build opaque effect mask");brush.Flush(Gdiplus::FlushIntentionSync);}
     const Gdiplus::Rect area(0,0,64,64);using zoomit::runtime::Api;

@@ -98,7 +98,8 @@ int RunSupervisor(const wchar_t* executableOverride=nullptr) {
         bool reportSaved=false;
         const ULONGLONG detected=GetTickCount64();
         if(lastCrash&&detected-lastCrash>=60000)retries=0;
-        StringCchCopyW(objects.shared->outcome,160,retries==0?
+        StringCchCopyW(objects.shared->outcome,160,objects.shared->normalExit?
+            L"Supervisione: errore durante la chiusura richiesta, nessun riavvio.":retries==0?
             L"Supervisione: riavvio e ripristino dell'ultimo stato valido.":
             retries==1?L"Supervisione: secondo crash ravvicinato, riavvio sul desktop.":
             L"Supervisione: tre crash ravvicinati, riavvii automatici fermati.");
@@ -117,22 +118,38 @@ int RunSupervisor(const wchar_t* executableOverride=nullptr) {
 #endif
             if(allowReporter&&Launch(supervisor,dumpCommand,reporter)){
                 CloseHandle(reporter.hThread);
-                if(WaitForSingleObject(reporter.hProcess,3000)==WAIT_TIMEOUT){
-                    TerminateProcess(reporter.hProcess,ERROR_TIMEOUT);WaitForSingleObject(reporter.hProcess,1000);
-                }
-                DWORD result=1;GetExitCodeProcess(reporter.hProcess,&result);reportSaved=result==0;CloseHandle(reporter.hProcess);
+                DWORD result=1;
+                reportSaved=recovery::ConfirmProcessExit(reporter.hProcess,ERROR_TIMEOUT)==ERROR_SUCCESS &&
+                    GetExitCodeProcess(reporter.hProcess,&result) && result==0;
+                CloseHandle(reporter.hProcess);
             }
             if(!reportSaved)reportSaved=recovery::WriteReport(objects.shared->diagnostic,&objects.shared->crash,nullptr,
                 L"Raccolta minidump non completata nei tempi previsti; recupero automatico prosegue.");
             SetEvent(objects.ack);
-            if(WaitForSingleObject(child.hProcess,3000)==WAIT_TIMEOUT){
-                TerminateProcess(child.hProcess,objects.shared->crash.code);WaitForSingleObject(child.hProcess,1000);
+            const DWORD stopError=recovery::ConfirmProcessExit(child.hProcess,objects.shared->crash.code);
+            if(stopError!=ERROR_SUCCESS){
+                CloseHandle(child.hProcess);
+                recovery::Diagnostics failure{};failure.process=child.dwProcessId;failure.error=stopError;
+                StringCchCopyW(failure.operation,128,L"Conferma terminazione del processo ZoomIt Custom");
+                recovery::WriteReport(failure,nullptr,nullptr,
+                    L"Windows non ha confermato la chiusura. Ripristino delle impostazioni e riavvio automatico sospesi.");
+                return 1;
             }
         }else if(event!=WAIT_OBJECT_0){
             SetEvent(objects.ack);CloseHandle(child.hProcess);return 1;
         }
         DWORD exitCode=1;GetExitCodeProcess(child.hProcess,&exitCode);CloseHandle(child.hProcess);
-        if(objects.shared->normalExit)return 0;
+        const bool exitRequested=objects.shared->normalExit!=0;
+        if(exitRequested && exitCode==0 && !objects.shared->crashReported){
+            auto& system=objects.shared->system;
+            recovery::RestoreSystemSettings(system);
+            if(!system.stickyChanged && !system.saverChanged && !system.displayChanged)return 0;
+            auto diagnostic=objects.shared->diagnostic;
+            diagnostic.process=child.dwProcessId;diagnostic.error=ERROR_GEN_FAILURE;
+            StringCchCopyW(diagnostic.operation,128,L"Ripristino impostazioni di sistema alla chiusura");
+            recovery::WriteReport(diagnostic,nullptr,nullptr,L"Windows non ha confermato il ripristino; sessione terminata.");
+            return 1;
+        }
         if(!reportSaved){
             auto diagnostic=objects.shared->diagnostic;diagnostic.process=child.dwProcessId;diagnostic.error=exitCode;
             StringCchCopyW(diagnostic.operation,128,L"Terminazione anomala del processo");
@@ -141,6 +158,7 @@ int RunSupervisor(const wchar_t* executableOverride=nullptr) {
             recovery::WriteReport(diagnostic,&crash,nullptr,objects.shared->outcome);
         }
         recovery::RestoreSystem(objects.shared->system);
+        if(exitRequested)return 1;
         const ULONGLONG now=GetTickCount64();
         if(lastCrash&&now-lastCrash>=60000)retries=0;
         lastCrash=now;
